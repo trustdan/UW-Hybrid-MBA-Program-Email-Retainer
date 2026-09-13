@@ -1,0 +1,25 @@
+# Binaries and build artifacts
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Runtime state, logs, and locks
+state/
+*.lock
+*.log
+
+# Source mail originals and local data
+originals/
+.local-imports/
+manual-exports/
+*.eml
+*.pst
+*.ost
+
+# OS generated files
+Thumbs.db
+.DS_Store
+Desktop.ini

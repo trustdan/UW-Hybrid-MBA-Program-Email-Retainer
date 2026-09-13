@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "input": "C:\\Users\\<YourUser>\\OneDrive - UW\\HMBA-Emails",
+  "archive": "C:\\Users\\<YourUser>\\Documents\\HMBA-Archive",
+  "shared": "C:\\Users\\<YourUser>\\OneDrive - UW\\HMBA-Emails\\Markdown",
+  "state": "C:\\Users\\<YourUser>\\.hmba-mail\\state",
+  "originals": "C:\\Users\\<YourUser>\\.hmba-mail\\originals",
+  "rules": [
+    {
+      "subject": "Recent Canvas Notifications",
+      "category": "canvas-digest"
+    },
+    {
+      "subject": "Weekly Announcement",
+      "category": "program-announcement"
+    }
+  ],
+  "max_message_bytes": 52428800,
+  "timeout_seconds": 600,
+  "git": {
+    "enabled": false,
+    "archive_repo": "",
+    "remote": "origin",
+    "branch": "main"
+  }
+}
