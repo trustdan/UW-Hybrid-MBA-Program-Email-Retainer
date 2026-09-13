@@ -1,17 +1,19 @@
-name: CI
+name: CI & Release
 
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test:
+    name: Test (${{ matrix.os }})
     strategy:
       matrix:
         os: [windows-latest, ubuntu-latest]
@@ -27,5 +29,52 @@ jobs:
         run: go vet ./...
       - name: Run Tests
         run: go test -v ./...
-      - name: Build binary
+      - name: Build check
         run: go build -trimpath -ldflags="-s -w -X main.version=ci-${{ github.sha }}" -o dist/hmba-mail ./cmd/hmba-mail
+
+  release:
+    name: Build & Publish Release
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build Release Package
+        shell: powershell
+        run: |
+          $version = "${{ github.ref_name }}"
+          $relDir = "release-pkg"
+          New-Item -ItemType Directory -Force $relDir | Out-Null
+
+          Write-Host "==> Compiling hmba-mail.exe for version $version..."
+          $exePath = Join-Path $relDir "hmba-mail.exe"
+          go build -trimpath -ldflags "-s -w -X main.version=$version" -o $exePath ./cmd/hmba-mail
+
+          Write-Host "==> Bundling release assets..."
+          Copy-Item "config.example.json" -Destination $relDir
+          Copy-Item "scripts/package.ps1" -Destination $relDir
+          Copy-Item "README.md" -Destination $relDir
+          Copy-Item "LICENSE" -Destination $relDir
+
+          $zipName = "hmba-mail-$version-windows-amd64.zip"
+          Compress-Archive -Path "$relDir/*" -DestinationPath $zipName -Force
+
+          $hash = (Get-FileHash $zipName -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path "SHA256SUMS.txt" -Value "$hash  $zipName"
+
+          Write-Host "Release asset ready: $zipName ($hash)"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            hmba-mail-*-windows-amd64.zip
+            SHA256SUMS.txt
+          generate_release_notes: true
+          draft: false
+          prerelease: false

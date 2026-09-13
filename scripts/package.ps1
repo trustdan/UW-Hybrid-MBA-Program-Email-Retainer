@@ -8,24 +8,40 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $distDir = Join-Path $repoRoot "dist"
 
-Write-Host "==> Verifying Go tests..."
-Push-Location $repoRoot
-try {
-    & go test ./...
-    if ($LASTEXITCODE -ne 0) { throw "Tests failed" }
-
-    Write-Host "==> Compiling hmba-mail.exe..."
-    New-Item -ItemType Directory -Force $distDir | Out-Null
-    $distExe = Join-Path $distDir "hmba-mail.exe"
-    & go build -trimpath -ldflags "-s -w -X main.version=$Version" -o $distExe ./cmd/hmba-mail
-    if ($LASTEXITCODE -ne 0) { throw "Build failed" }
-
-    $hash = (Get-FileHash $distExe -Algorithm SHA256).Hash.ToLowerInvariant()
-    Set-Content -Path (Join-Path $distDir "SHA256SUMS") -Value "$hash  hmba-mail.exe"
-    Write-Host "Built: $distExe ($hash)"
-} finally {
-    Pop-Location
+# Check if a pre-compiled binary is provided (e.g. from a release zip)
+$prebuilt = $null
+if (Test-Path (Join-Path $PSScriptRoot "hmba-mail.exe")) {
+    $prebuilt = Join-Path $PSScriptRoot "hmba-mail.exe"
+} elseif (Test-Path (Join-Path $repoRoot "hmba-mail.exe")) {
+    $prebuilt = Join-Path $repoRoot "hmba-mail.exe"
+} elseif (Test-Path (Join-Path $distDir "hmba-mail.exe")) {
+    $prebuilt = Join-Path $distDir "hmba-mail.exe"
 }
+
+if ($prebuilt) {
+    Write-Host "==> Using pre-compiled binary: $prebuilt"
+    $distExe = $prebuilt
+} else {
+    Write-Host "==> Verifying Go tests..."
+    Push-Location $repoRoot
+    try {
+        & go test ./...
+        if ($LASTEXITCODE -ne 0) { throw "Tests failed" }
+
+        Write-Host "==> Compiling hmba-mail.exe..."
+        New-Item -ItemType Directory -Force $distDir | Out-Null
+        $distExe = Join-Path $distDir "hmba-mail.exe"
+        & go build -trimpath -ldflags "-s -w -X main.version=$Version" -o $distExe ./cmd/hmba-mail
+        if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+
+        $hash = (Get-FileHash $distExe -Algorithm SHA256).Hash.ToLowerInvariant()
+        Set-Content -Path (Join-Path $distDir "SHA256SUMS") -Value "$hash  hmba-mail.exe"
+        Write-Host "Built: $distExe ($hash)"
+    } finally {
+        Pop-Location
+    }
+}
+
 
 Write-Host "==> Packaging into $TargetDir..."
 $binDir = Join-Path $TargetDir "bin"

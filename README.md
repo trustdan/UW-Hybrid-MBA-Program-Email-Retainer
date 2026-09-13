@@ -60,32 +60,46 @@ Automatically stages, commits, and pushes converted Markdown notes to a private 
 
 ## Quickstart & Installation
 
-### 1. Prerequisites
-- Windows 10 or 11.
-- Microsoft OneDrive for Business (connected to your UW account).
-- [Go 1.26+](https://go.dev/dl/) (only required if building from source).
+### Option 1: Pre-Built Release (Recommended for Classmates)
+No programming tools, compilers, or Go installation required!
 
-### 2. Build & Package
-Clone this repository and run the automated packaging script from PowerShell:
+1. Download the latest **`hmba-mail-*-windows-amd64.zip`** from the [GitHub Releases](https://github.com/trustdan/hmba-mail/releases) page.
+2. Unzip the downloaded folder.
+3. Right-click `package.ps1` → **Run with PowerShell** (or open PowerShell in that folder and run):
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File package.ps1
+   ```
 
-```powershell
-git clone https://github.com/trustdan/hmba-mail.git
-cd hmba-mail
-powershell -ExecutionPolicy Bypass -File scripts/package.ps1
-```
+### Option 2: Build From Source
+If you are a developer or have Go installed:
 
-This installs the binary and config into your user profile at `$HOME\.hmba-mail`:
+1. Clone this repository:
+   ```powershell
+   git clone https://github.com/trustdan/hmba-mail.git
+   cd hmba-mail
+   ```
+2. Run the packaging script:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts/package.ps1
+   ```
+
+---
+
+### What the Installation Sets Up
+
+The packaging script automatically configures `$HOME\.hmba-mail`:
 - `bin/hmba-mail.exe`: Standalone binary.
-- `config.json`: Active configuration.
+- `config.json`: Active configuration with auto-detected OneDrive paths.
 - `state/`: Execution logs and journal.
 - `originals/`: Local byte-preserved EML originals.
 
-### 3. Verify Diagnostics
+### Verify Diagnostics
 Test the installation from any directory:
 
 ```powershell
 & "$HOME\.hmba-mail\bin\hmba-mail.exe" check --config "$HOME\.hmba-mail\config.json"
 ```
+
 
 ---
 
