@@ -1,6 +1,6 @@
-# HMBA Mail Automation (`hmba-mail`)
+# UW Hybrid MBA Program Email Retainer (`hmba-mail`)
 
-Convert locally saved Foster Hybrid MBA announcements and Canvas notifications into searchable Markdown. The Go executable writes matching notes to a local archive and a shared folder, and preserves the original emails.
+Convert locally saved Foster Hybrid MBA announcements and Canvas notifications into searchable Markdown. The Go executable (`hmba-mail`) writes matching notes to a local archive and a shared folder, and preserves the original emails.
 
 **Current scope:** local conversion and Windows logon automation. Automatic Git publishing is disabled by configuration validation, even though an internal implementation exists. Keep `git.enabled` set to `false`.
 
@@ -14,6 +14,11 @@ Convert locally saved Foster Hybrid MBA announcements and Canvas notifications i
 - [Windows automation](#windows-automation)
 - [CLI reference](#cli-reference)
 - [Troubleshooting and recovery](#troubleshooting-and-recovery)
+- [Template repository setup](#template-repository-setup)
+- [Contributing and collaboration](#contributing-and-collaboration)
+  - [Forking the repository](#forking-the-repository)
+  - [Submitting pull requests](#submitting-pull-requests)
+  - [Using GitHub issues](#using-github-issues)
 - [Development](#development)
 
 ## How it works
@@ -50,10 +55,16 @@ Both `archive` and `shared` are required, including when sharing only through On
 From PowerShell:
 
 ```powershell
-git clone https://github.com/trustdan/hmba-mail.git
-cd hmba-mail
+git clone https://github.com/trustdan/UW-Hybrid-MBA-Program-Email-Retainer.git
+cd UW-Hybrid-MBA-Program-Email-Retainer
 powershell -ExecutionPolicy Bypass -File scripts/package.ps1
 ```
+
+> [!NOTE]
+> If you previously cloned the repository under its former name (`hmba-mail`), update your local git remote URL:
+> ```powershell
+> git remote set-url origin https://github.com/trustdan/UW-Hybrid-MBA-Program-Email-Retainer.git
+> ```
 
 The script runs tests, builds `dist/hmba-mail.exe`, writes `dist/SHA256SUMS`, and installs into `$HOME\.hmba-mail`. It creates a default configuration only if one does not exist. It does not register the scheduled task or add the executable to `PATH`.
 
@@ -237,6 +248,72 @@ Runtime files live under the configured `state` directory:
 Back up configuration, the journal, originals, and edited notes before moving an installation or recovering from a failure. Do not delete the journal as a routine reset: losing generated hashes can turn future updates into conflicts. Sources are not automatically removed or rotated, so input and original storage grow over time.
 
 See [repository review](docs/repository-review.md) for architecture, operating workflow inspection, and remediation details.
+
+## Template repository setup
+
+This repository can serve as a template for students setting up their own personal email retention pipeline:
+
+1. **Create your personal repository**:
+   - Navigate to [UW-Hybrid-MBA-Program-Email-Retainer](https://github.com/trustdan/UW-Hybrid-MBA-Program-Email-Retainer) on GitHub.
+   - Click the green **Use this template** button (near top right) and choose **Create a new repository**.
+   - **Recommended Visibility:** Select **Private** if you intend to store custom configuration paths, personal notes, or personalized scripts in your repository.
+2. **Clone your repository**:
+   ```powershell
+   git clone https://github.com/<your-username>/<your-repo-name>.git
+   cd <your-repo-name>
+   ```
+3. **Build and configure**:
+   - Run `powershell -ExecutionPolicy Bypass -File scripts/package.ps1` to build the executable into `$HOME\.hmba-mail`.
+   - Configure `$HOME\.hmba-mail\config.json` with your personal UW OneDrive folder paths.
+   - Starting from a template gives you a clean git history without carrying upstream project commits, making it ideal for personal daily usage.
+
+## Contributing and collaboration
+
+We welcome suggestions, bug fixes, and contributions from students and developers. See [CONTRIBUTING.md](CONTRIBUTING.md) for full contribution guidelines.
+
+### Forking the repository
+
+If you plan to contribute bug fixes or improvements back to the main project:
+
+1. Click **Fork** on the [UW-Hybrid-MBA-Program-Email-Retainer](https://github.com/trustdan/UW-Hybrid-MBA-Program-Email-Retainer) page.
+2. Clone your fork locally:
+   ```powershell
+   git clone https://github.com/<your-username>/UW-Hybrid-MBA-Program-Email-Retainer.git
+   cd UW-Hybrid-MBA-Program-Email-Retainer
+   ```
+3. Add the upstream remote to keep your fork updated:
+   ```powershell
+   git remote add upstream https://github.com/trustdan/UW-Hybrid-MBA-Program-Email-Retainer.git
+   git fetch upstream
+   ```
+4. Keep your `main` branch synced with upstream:
+   ```powershell
+   git checkout main
+   git pull upstream main
+   git push origin main
+   ```
+
+### Submitting pull requests
+
+1. **Branch:** Create a dedicated branch for your change:
+   ```powershell
+   git checkout -b feature/your-feature-name
+   ```
+2. **Verify:** Run tests locally before opening a pull request:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts/test.ps1
+   ```
+3. **Commit & Push:** Commit your changes with clear descriptions and push the branch to your fork.
+4. **Open PR:** On GitHub, open a Pull Request targeting `main` on `trustdan/UW-Hybrid-MBA-Program-Email-Retainer`. Complete the PR template checklist.
+5. **CI Checks:** Automated GitHub Actions workflows will run tests and build checks across Windows and Ubuntu.
+
+### Using GitHub issues
+
+Track bugs, ask questions, or propose features via [GitHub Issues](https://github.com/trustdan/UW-Hybrid-MBA-Program-Email-Retainer/issues):
+
+- **Bug Reports:** Use the bug report template. Provide sanitized output from `hmba-mail check` or `hmba-mail status`, reproduction steps, and OS/Go versions.
+- **Feature Requests:** Use the feature request template to outline problems and propose improvements.
+- **Privacy Notice:** Never include real student emails, classmate names, grades, or private cohort messages in issues or PRs. Use synthetic or redacted data (e.g. `student@uw.edu`).
 
 ## Development
 
