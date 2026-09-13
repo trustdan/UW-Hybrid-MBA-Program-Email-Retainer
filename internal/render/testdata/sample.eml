@@ -1,0 +1,24 @@
+From: UW Canvas Notifications <canvas@uw.edu>
+To: student@uw.edu
+Subject: Recent Canvas Notifications
+Date: Sat, 12 Sep 2026 09:55:26 -0500
+Message-ID: <sample-msg-id-12345@canvas.uw.edu>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+<!DOCTYPE html>
+<html>
+<head><title>Canvas Notification</title></head>
+<body>
+  <div style="background-color: #ffcccc; padding: 10px; border: 1px solid #cc0000;">
+    <strong>Notice:</strong> This Message Is From an Untrusted Sender
+  </div>
+  <h1>Weekly Course Digest</h1>
+  <p>Here are your recent announcements and assignment updates.</p>
+  <table>
+    <tr><th>Course</th><th>Assignment</th><th>Due Date</th></tr>
+    <tr><td>HMBA 501</td><td>Case Analysis 1</td><td>Sep 18</td></tr>
+  </table>
+</body>
+</html>

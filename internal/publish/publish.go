@@ -1,4 +1,4 @@
-﻿package publish
+package publish
 
 import (
 	"bytes"
@@ -77,43 +77,55 @@ func AtomicWrite(target string, data []byte) error {
 	return fmt.Errorf("replace %s: %w", target, err)
 }
 
-// WriteMarkdownDestination checks for existing files, compares hashes, and writes safely.
-func WriteMarkdownDestination(destPath string, data []byte, sourceSHA256 string, journal *StateJournal) (WriteResult, string, error) {
+// PreviewMarkdownDestination inspects destination state without modifying any files.
+func PreviewMarkdownDestination(destPath string, data []byte, sourceSHA256 string, journal *StateJournal) (WriteResult, string) {
 	existingBytes, err := os.ReadFile(destPath)
 	if os.IsNotExist(err) {
-		if err := AtomicWrite(destPath, data); err != nil {
-			return WriteResultConflict, "", err
-		}
-		return WriteResultCreated, "", nil
+		return WriteResultCreated, ""
 	}
 	if err != nil {
-		return WriteResultConflict, "", err
+		return WriteResultConflict, fmt.Sprintf("read destination: %v", err)
 	}
 
 	if bytes.Equal(existingBytes, data) {
-		return WriteResultUnchanged, "", nil
+		return WriteResultUnchanged, ""
 	}
 
 	// File exists and differs
 	sourceMarker := fmt.Sprintf(`source_sha256: "%s"`, sourceSHA256)
 	if !strings.Contains(string(existingBytes), sourceMarker) {
-		return WriteResultConflict, "unrelated destination file or hash collision", nil
+		return WriteResultConflict, "unrelated destination file or hash collision"
 	}
 
 	// Has source marker: check if it matches the last generated hash recorded in state
 	rec, hasRec := journal.Get(sourceSHA256)
 	existingHash := naming.ComputeSHA256(existingBytes)
 	if hasRec && existingHash == rec.GeneratedSHA256 {
-		// Matches last generated: user hasn't edited, safe to update
-		if err := AtomicWrite(destPath, data); err != nil {
-			return WriteResultConflict, "", err
-		}
-		return WriteResultUpdated, "", nil
+		return WriteResultUpdated, ""
 	}
 
 	// User made manual edits or state unrecorded
-	return WriteResultConflict, "destination contains local edits; refusing to overwrite", nil
+	return WriteResultConflict, "destination contains local edits; refusing to overwrite"
 }
+
+// WriteMarkdownDestination checks for existing files, compares hashes, and writes safely.
+func WriteMarkdownDestination(destPath string, data []byte, sourceSHA256 string, journal *StateJournal) (WriteResult, string, error) {
+	res, conflictReason := PreviewMarkdownDestination(destPath, data, sourceSHA256, journal)
+	switch res {
+	case WriteResultCreated, WriteResultUpdated:
+		if err := AtomicWrite(destPath, data); err != nil {
+			return WriteResultConflict, "", err
+		}
+		return res, "", nil
+	case WriteResultUnchanged:
+		return WriteResultUnchanged, "", nil
+	case WriteResultConflict:
+		return WriteResultConflict, conflictReason, nil
+	default:
+		return WriteResultConflict, conflictReason, nil
+	}
+}
+
 
 // waitForInputDirectory polls up to maxWait for input directory to exist and be readable.
 // This handles OneDrive hydration / startup delay when launched right after logon.
@@ -198,6 +210,14 @@ func Backfill(ctx context.Context, cfg config.Config, dryRun bool) (*report.Back
 		return nil, fmt.Errorf("archive directory %s unavailable: %w", cfg.Archive, err)
 	}
 
+	if !dryRun {
+		releaseLock, err := AcquireLock(cfg.State)
+		if err != nil {
+			return nil, err
+		}
+		defer releaseLock()
+	}
+
 	err := filepath.WalkDir(cfg.Archive, func(path string, d fs.DirEntry, err error) error {
 		select {
 		case <-ctx.Done():
@@ -223,7 +243,14 @@ func Backfill(ctx context.Context, cfg config.Config, dryRun bool) (*report.Back
 		rep.TotalScanned++
 		data, err := os.ReadFile(path)
 		if err != nil {
-			rep.Errors = append(rep.Errors, fmt.Sprintf("read %s: %v", path, err))
+			errStr := fmt.Sprintf("read %s: %v", path, err)
+			rep.Errors = append(rep.Errors, errStr)
+			rep.Files = append(rep.Files, report.BackfillFileRecord{
+				ArchiveRel:  filepath.ToSlash(rel),
+				SharedRel:   filepath.ToSlash(filepath.Join("Markdown", rel)),
+				Action:      "error",
+				ConflictMsg: errStr,
+			})
 			return nil
 		}
 
@@ -275,7 +302,9 @@ func Backfill(ctx context.Context, cfg config.Config, dryRun bool) (*report.Back
 		return nil, fmt.Errorf("walk archive: %w", err)
 	}
 
-	if rep.Conflicts > 0 {
+	if len(rep.Errors) > 0 {
+		rep.Status = "backfill_failed"
+	} else if rep.Conflicts > 0 {
 		rep.Status = "backfill_conflicts_detected"
 	}
 
@@ -344,12 +373,21 @@ func Run(ctx context.Context, cfg config.Config, dryRun bool) (*report.RunReport
 		defer releaseLock()
 	}
 
-	journal, err := LoadJournal(cfg.State)
-	if err != nil {
-		if logger != nil {
-			logger.Logf("load journal failed: %v", err)
+	var journal *StateJournal
+	var err error
+	if dryRun {
+		journal, err = LoadJournalReadOnly(cfg.State)
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
+	} else {
+		journal, err = LoadJournal(cfg.State)
+		if err != nil {
+			if logger != nil {
+				logger.Logf("load journal failed: %v", err)
+			}
+			return nil, err
+		}
 	}
 
 	// Discover EML files with discovery pruning of Shared directory
@@ -385,6 +423,12 @@ func Run(ctx context.Context, cfg config.Config, dryRun bool) (*report.RunReport
 	if len(emlPaths) == 0 {
 		if logger != nil {
 			logger.Logf("scan complete: no EML files found in input directory")
+		}
+		if !dryRun {
+			lastRunBytes, err := json.MarshalIndent(rep, "", "  ")
+			if err == nil {
+				_ = AtomicWrite(filepath.Join(cfg.State, "last-run.json"), lastRunBytes)
+			}
 		}
 		// Empty input is NOT a failure; clean return with 0 counts
 		return rep, nil
@@ -435,7 +479,7 @@ func Run(ctx context.Context, cfg config.Config, dryRun bool) (*report.RunReport
 		when, _, found := naming.DeriveTimestamp(msg.Received, msg.Date)
 		filename := naming.FormatDateFilename(when, found, msg.Subject, msg.SHA256)
 
-		mdData, _, err := render.Render(msg, msg.Category)
+		mdData, _, err := render.RenderWithSource(msg, msg.Category, fmt.Sprintf("originals/%s.eml", msg.SHA256))
 		if err != nil {
 			rep.Counts.Failed++
 			errMsg := fmt.Sprintf("render %s: %v", emlPath, err)
@@ -457,9 +501,26 @@ func Run(ctx context.Context, cfg config.Config, dryRun bool) (*report.RunReport
 		}
 
 		if dryRun {
-			rep.Counts.Written++
-			rec.ArchiveWritten = true
-			rec.SharedWritten = true
+			archPath := filepath.Join(cfg.Archive, msg.Category, filename)
+			sharedPath := filepath.Join(cfg.Shared, msg.Category, filename)
+
+			resArch, conflictArch := PreviewMarkdownDestination(archPath, mdData, msg.SHA256, journal)
+			resShared, conflictShared := PreviewMarkdownDestination(sharedPath, mdData, msg.SHA256, journal)
+
+			if resArch == WriteResultConflict || resShared == WriteResultConflict {
+				rep.Counts.Conflicts++
+				if resArch == WriteResultConflict {
+					rec.Error = fmt.Sprintf("archive conflict: %s", conflictArch)
+				} else {
+					rec.Error = fmt.Sprintf("shared conflict: %s", conflictShared)
+				}
+			} else if resArch == WriteResultUnchanged && resShared == WriteResultUnchanged {
+				rep.Counts.Unchanged++
+			} else {
+				rep.Counts.Written++
+				rec.ArchiveWritten = (resArch == WriteResultCreated || resArch == WriteResultUpdated)
+				rec.SharedWritten = (resShared == WriteResultCreated || resShared == WriteResultUpdated)
+			}
 			rep.Messages = append(rep.Messages, rec)
 			continue
 		}
@@ -589,20 +650,40 @@ func Run(ctx context.Context, cfg config.Config, dryRun bool) (*report.RunReport
 		}
 	}
 
+	if rep.Counts.Failed > 0 || rep.Counts.Conflicts > 0 || len(rep.Errors) > 0 {
+		if rep.Status == "run_complete" {
+			rep.Status = "run_completed_with_issues"
+		}
+	}
+
 	if !dryRun {
-		_ = journal.Save()
+		var persistenceErrs []string
+		if err := journal.Save(); err != nil {
+			errStr := fmt.Sprintf("save journal: %v", err)
+			rep.Errors = append(rep.Errors, errStr)
+			persistenceErrs = append(persistenceErrs, errStr)
+			rep.Status = "run_completed_with_issues"
+			if logger != nil {
+				logger.Logf("persistence error: %s", errStr)
+			}
+		}
 		// Write last-run.json in State
 		lastRunBytes, _ := json.MarshalIndent(rep, "", "  ")
-		_ = AtomicWrite(filepath.Join(cfg.State, "last-run.json"), lastRunBytes)
+		if err := AtomicWrite(filepath.Join(cfg.State, "last-run.json"), lastRunBytes); err != nil {
+			errStr := fmt.Sprintf("write last-run.json: %v", err)
+			rep.Errors = append(rep.Errors, errStr)
+			persistenceErrs = append(persistenceErrs, errStr)
+			rep.Status = "run_completed_with_issues"
+			if logger != nil {
+				logger.Logf("persistence error: %s", errStr)
+			}
+		}
 		if logger != nil {
 			logger.Logf("run complete: scanned=%d matched=%d written=%d unchanged=%d conflicts=%d failed=%d",
 				rep.Counts.Scanned, rep.Counts.Matched, rep.Counts.Written, rep.Counts.Unchanged, rep.Counts.Conflicts, rep.Counts.Failed)
 		}
-	}
-
-	if rep.Counts.Failed > 0 || rep.Counts.Conflicts > 0 {
-		if rep.Status == "run_complete" {
-			rep.Status = "run_completed_with_issues"
+		if len(persistenceErrs) > 0 {
+			return rep, fmt.Errorf("persistence failure: %s", strings.Join(persistenceErrs, "; "))
 		}
 	}
 

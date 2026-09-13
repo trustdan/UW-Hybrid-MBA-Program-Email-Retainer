@@ -1,223 +1,269 @@
 # HMBA Mail Automation (`hmba-mail`)
 
-A lightweight, standalone Go automation engine that turns incoming Foster Hybrid MBA email announcements and Canvas notifications into clean, deterministic Markdown notes.
+Convert locally saved Foster Hybrid MBA announcements and Canvas notifications into searchable Markdown. The Go executable writes matching notes to a local archive and a shared folder, and preserves the original emails.
 
-Designed for classmates who want automated, searchable class notes in **OneDrive** or **Git** without requiring Python, WSL, or complex Graph API developer tenant consent.
+**Current scope:** local conversion and Windows logon automation. Automatic Git publishing is disabled by configuration validation, even though an internal implementation exists. Keep `git.enabled` set to `false`.
 
----
+## Contents
 
-## How It Works
+- [How it works](#how-it-works)
+- [Install and run](#install-and-run)
+- [Power Automate setup](#power-automate-setup)
+- [Configuration](#configuration)
+- [Output and repeat runs](#output-and-repeat-runs)
+- [Windows automation](#windows-automation)
+- [CLI reference](#cli-reference)
+- [Troubleshooting and recovery](#troubleshooting-and-recovery)
+- [Development](#development)
+
+## How it works
 
 ```text
-UW Outlook (Exchange Online)
-       │ (incoming Canvas notifications & Weekly Announcements)
-       ▼
-Power Automate Cloud Flow: "Canvas emails"
-       │ (exports raw .eml to OneDrive)
-       ▼
-OneDrive for Business: "HMBA-Emails/<Message-Id>.eml"
-       │ (synced locally to your PC)
-       ▼
-Windows Task Scheduler: "HMBAMailSync" (Logon trigger + 2-min delay)
-       │ (launches hmba-mail.exe silently in the background)
-       ├────────────────────────────────────────┬────────────────────────────────────────┐
-       ▼                                        ▼                                        ▼
-Local Archive / Git:                    OneDrive Shared Notes:                 Originals Backup:
-Documents/HMBA-Archive/                 OneDrive/HMBA-Emails/Markdown/         .hmba-mail/originals/
-(Searchable Markdown notes)             (Classmate-facing shared folder)       (Byte-for-byte raw EML)
+Outlook mailbox
+  -> Power Automate exports matching messages as .eml
+  -> OneDrive syncs HMBA-Emails to your PC
+  -> hmba-mail run scans the local input folder
+       -> archive/<category>/<filename>.md
+       -> shared/<category>/<filename>.md
+       -> originals/<full-source-sha256>.eml
+       -> state/ (journal, reports, logs)
 ```
 
----
+Power Automate and OneDrive handle mailbox access and cloud synchronization separately. The executable does not download mail or require Graph credentials. You can also export `.eml` files manually and use entirely local folders.
 
-## Key Features
+The converter unwraps Outlook SafeLinks, simplifies HTML and presentation tables, retains meaningful data tables, and replaces images with text placeholders without fetching them. Markdown includes email metadata and attachment names; attachment contents remain in the original `.eml`.
 
-- **Zero-Dependency Runtime**: Compiles into a single, standalone Windows 64-bit `.exe` with zero external runtime dependencies.
-- **Deterministic Markdown**:
-  - Unwraps Outlook Safelinks back to clean canonical URLs.
-  - Flattens complex Canvas presentation tables while preserving meaningful data tables.
-  - Strips invisible 1x1 tracking pixels and inline styling.
-  - Converts images into descriptive alt-text placeholders (never fetches external images for privacy).
-  - Preserves sender, dates, subject, and attachment names in standard YAML frontmatter.
-- **Dual-Destination Publishing**: Converted notes are saved both to a local archive (or Git repository) and to a classmate-facing OneDrive folder (`Markdown/`).
-- **Silent Background Execution**: Installs directly into Windows Task Scheduler with a logon trigger and windowless VBScript launcher. No pop-ups or console windows.
-- **Fail-Safe & Idempotent**:
-  - OS-backed kernel `LockFileEx` non-blocking exclusive locking prevents overlapping runs.
-  - Detects manual user edits and prevents overwrite conflicts.
-  - Prunes nested output directories during discovery so generated Markdown is never re-scanned as input mail.
-  - Backs up raw source emails byte-for-byte by full SHA-256 hash.
+Both `archive` and `shared` are required, including when sharing only through OneDrive. Conversion completion confirms local writes, not successful OneDrive upload.
 
----
+## Install and run
 
-## Modes of Operation
+### 1. Prerequisites
 
-### Mode A: OneDrive-Only Mode (Recommended for Classmates)
-No Git repository required! Notes are automatically converted and saved to `OneDrive - UW/HMBA-Emails/Markdown/`, which you can share directly with classmates or open in Obsidian/VS Code/Notepad.
+- Windows with PowerShell for the installation scripts and Task Scheduler integration.
+- Go matching [go.mod](go.mod), currently Go 1.26.0 or newer, to build from source. Go is not needed to run the built executable.
+- Git to clone this repository, or an extracted source download.
+- For the mailbox workflow: an Outlook/Microsoft 365 account, access to the Power Automate connectors, and OneDrive for Business syncing locally.
+- For silent scheduled runs: Windows Script Host (`wscript.exe`) and VBScript support must be available.
 
-### Mode B: Git Archive Mode
-Automatically stages, commits, and pushes converted Markdown notes to a private or shared Git repository (e.g. GitHub) with preflight safety checks and interrupted push recovery.
+### 2. Build and install
 
----
-
-## Quickstart & Installation
-
-### Option 1: Pre-Built Release (Recommended for Classmates)
-No programming tools, compilers, or Go installation required!
-
-1. Download the latest **`hmba-mail-*-windows-amd64.zip`** from the [GitHub Releases](https://github.com/trustdan/hmba-mail/releases) page.
-2. Unzip the downloaded folder.
-3. Right-click `package.ps1` → **Run with PowerShell** (or open PowerShell in that folder and run):
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File package.ps1
-   ```
-
-### Option 2: Build From Source
-If you are a developer or have Go installed:
-
-1. Clone this repository:
-   ```powershell
-   git clone https://github.com/trustdan/hmba-mail.git
-   cd hmba-mail
-   ```
-2. Run the packaging script:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File scripts/package.ps1
-   ```
-
----
-
-### What the Installation Sets Up
-
-The packaging script automatically configures `$HOME\.hmba-mail`:
-- `bin/hmba-mail.exe`: Standalone binary.
-- `config.json`: Active configuration with auto-detected OneDrive paths.
-- `state/`: Execution logs and journal.
-- `originals/`: Local byte-preserved EML originals.
-
-### Verify Diagnostics
-Test the installation from any directory:
+From PowerShell:
 
 ```powershell
-& "$HOME\.hmba-mail\bin\hmba-mail.exe" check --config "$HOME\.hmba-mail\config.json"
+git clone https://github.com/trustdan/hmba-mail.git
+cd hmba-mail
+powershell -ExecutionPolicy Bypass -File scripts/package.ps1
 ```
 
+The script runs tests, builds `dist/hmba-mail.exe`, writes `dist/SHA256SUMS`, and installs into `$HOME\.hmba-mail`. It creates a default configuration only if one does not exist. It does not register the scheduled task or add the executable to `PATH`.
 
----
-
-## Power Automate Cloud Flow Setup
-
-To have Microsoft 365 automatically export class emails into your OneDrive:
-
-1. Sign in to [Power Automate](https://make.powerautomate.com/) using your UW account.
-2. Click **Create** → **Automated cloud flow**.
-3. Name your flow: `Canvas emails`.
-4. Choose the trigger: **When a new email arrives (V3)** (Office 365 Outlook connector).
-   - Leave **From** and **Subject Filter** blank.
-5. Add a **Condition**:
-   - Set condition logic to **OR**:
-     - `Subject` contains `Recent Canvas Notifications`
-     - `Subject` contains `Weekly Announcement`
-6. Under **If yes**, add action: **Export email (V2)**:
-   - Message Id: select dynamic content **Message Id** from the trigger.
-7. Add action: **Create file** (OneDrive for Business connector):
-   - **Folder Path**: `/HMBA-Emails`
-   - **File Name**: dynamic content `Message Id` + `.eml` (e.g. `@{triggerOutputs()?['body/id']}.eml`)
-   - **File Content**: dynamic content `Body` from the *Export email (V2)* step.
-8. Save the flow.
-
-> [!TIP]
-> **Important OneDrive Tip**:
-> In Windows File Explorer, navigate to your `OneDrive - UW` directory, right-click the `HMBA-Emails` folder, and select **"Always keep on this device"**. This prevents OneDrive Files On-Demand from dehydrating `.eml` files to the cloud, ensuring instant local access.
-
----
-
-## Windows Task Scheduler Automation
-
-Register the background logon task to run automatically whenever you sign in to your PC:
+For another installation directory or an explicit version label:
 
 ```powershell
-& "$HOME\.hmba-mail\bin\hmba-mail.exe" schedule install --config "$HOME\.hmba-mail\config.json"
+powershell -ExecutionPolicy Bypass -File scripts/package.ps1 -TargetDir C:\Tools\hmba-mail -Version 0.1.0
 ```
 
-- **Trigger**: Runs 2 minutes after you log on to Windows (giving OneDrive time to start and sync new files).
-- **Execution**: Windowless and silent (`wscript.exe //B //Nologo run-task.vbs`).
-- **Battery**: Allowed to run on battery power.
-- **Single Instance**: Prevents duplicate overlapping runs.
+The build uses the current Go target architecture; the scripts do not force a Windows AMD64 cross-build.
 
-### Task Management Commands
+### 3. Edit the configuration
+
+These examples assume the default installation directory. Set these variables again when opening a new PowerShell session:
 
 ```powershell
-# Check task status
-& "$HOME\.hmba-mail\bin\hmba-mail.exe" schedule status
-
-# Trigger an immediate run in the background
-& "$HOME\.hmba-mail\bin\hmba-mail.exe" schedule run
-
-# Remove the scheduled task
-& "$HOME\.hmba-mail\bin\hmba-mail.exe" schedule remove
+$hmbaExe = Join-Path $HOME '.hmba-mail\bin\hmba-mail.exe'
+$hmbaConfig = Join-Path $HOME '.hmba-mail\config.json'
+notepad $hmbaConfig
 ```
 
----
+Verify all five paths against your actual folders. The installer prioritizes school OneDrive (`OneDriveCommercial`) over personal OneDrive (`OneDriveConsumer`), then falls back to `$HOME\OneDrive - UW`, and accepts an explicit `-OneDrivePath` parameter.
 
-## CLI Reference
+Create the configured input folder if necessary, then put a matching `.eml` in it using the flow below or a manual export. In File Explorer, select **Always keep on this device** for the input folder so mail is available locally. Output directories are created during live processing.
+
+### 4. Check, preview, and convert
 
 ```powershell
-# Check configuration and environment diagnostics
-hmba-mail.exe check --config PATH
-
-# Run manual conversion (scans input, outputs Markdown to archive & shared folder)
-hmba-mail.exe run --config PATH
-
-# Dry-run conversion (previews matching files without writing to disk or Git)
-hmba-mail.exe run --config PATH --dry-run
-
-# Historical backfill (copies existing Markdown notes to OneDrive without needing raw EMLs)
-hmba-mail.exe backfill --config PATH
-
-# Inspect last run counts and status
-hmba-mail.exe status --config PATH
-
-# Print version
-hmba-mail.exe version
+& $hmbaExe check --config $hmbaConfig
+& $hmbaExe run --config $hmbaConfig --dry-run
+& $hmbaExe run --config $hmbaConfig
+$LASTEXITCODE
+& $hmbaExe status --config $hmbaConfig
 ```
 
-### Exit Codes
-- `0`: Success / no changes needed
-- `1`: Report output failure
-- `2`: Invalid configuration or CLI arguments
-- `3`: Input directory unavailable or unreadable
-- `4`: Partial conversion or user conflict detected
-- `5`: Git publication blocked
-- `6`: Overlapping run in progress (`LockFileEx` active)
+`check` validates configuration and reports diagnostics. Missing output folders before the first run are normal; it does not test destination writability or cloud sync. Its input count includes only top-level `.eml` files, while `run` scans recursively.
 
----
+A first conversion should report `matched` and `written` greater than zero and create the same note in both destinations. A repeat run with identical input and notes should report `unchanged`. Counts are per message, not per destination. Empty input is a successful no-op and updates `last-run.json`.
 
-## Configuration Reference (`config.json`)
+**Preview behavior:** `run --dry-run` parses and renders matching mail and inspects destinations to preview would-write, unchanged, and conflict states without writing notes, originals, or state to disk. Reading cloud placeholders can cause OneDrive to download them.
 
-```json
-{
-  "version": 1,
-  "input": "C:\\Users\\<User>\\OneDrive - UW\\HMBA-Emails",
-  "archive": "C:\\Users\\<User>\\Documents\\HMBA-Archive",
-  "shared": "C:\\Users\\<User>\\OneDrive - UW\\HMBA-Emails\\Markdown",
-  "state": "C:\\Users\\<User>\\.hmba-mail\\state",
-  "originals": "C:\\Users\\<User>\\.hmba-mail\\originals",
-  "rules": [
-    { "subject": "Recent Canvas Notifications", "category": "canvas-digest" },
-    { "subject": "Weekly Announcement", "category": "program-announcement" }
-  ],
-  "max_message_bytes": 52428800,
-  "timeout_seconds": 600,
-  "git": {
-    "enabled": false,
-    "archive_repo": "",
-    "remote": "origin",
-    "branch": "main"
-  }
-}
+## Power Automate setup
+
+Create this flow in your school account. The repo does not include an importable flow package.
+
+1. Create an automated cloud flow named `Canvas emails`.
+2. Select Office 365 Outlook **When a new email arrives (V3)** and the mailbox folder you monitor. Leave From and Subject Filter blank.
+3. Add an OR condition: Subject contains `Recent Canvas Notifications`, or Subject contains `Weekly Announcement`.
+4. In the yes branch, add **Export email (V2)**. Use the trigger's Message Id.
+5. Add OneDrive for Business **Create file** with folder `/HMBA-Emails`, a unique filename ending in `.eml`, and the exported email's binary Body as File Content. Do not use the trigger's HTML message body. A filename expression such as `concat(guid(), '.eml')` avoids using mailbox identifiers as filenames.
+6. Save and test with a new matching email. Check flow run history, the cloud `.eml`, and then its local synced copy before running the converter.
+
+Action contracts and connector limitations are documented in Microsoft's [Office 365 Outlook reference](https://learn.microsoft.com/en-us/connectors/office365/) and [OneDrive for Business reference](https://learn.microsoft.com/en-us/connectors/onedriveforbusinessconnector/).
+
+The arrival flow handles new mail. For older mail, export `.eml` files into `input` and run conversion. The CLI's `backfill` command copies existing Markdown; it does not retrieve historical mailbox messages. Keep flow filters and configuration rules aligned when changing subjects.
+
+## Configuration
+
+Use [config.example.json](config.example.json) as the complete starting template. Replace its `<YourUser>` placeholders before use. JSON requires quoted property names, no comments or trailing commas, and doubled backslashes in Windows paths (forward slashes also work).
+
+| Field | Meaning and default |
+| --- | --- |
+| `version` | Schema version; only `1` is supported. Defaults to `1`. |
+| `input` | Required directory containing source `.eml` files; must exist for processing. |
+| `archive` | Required local Markdown destination. |
+| `shared` | Required second Markdown destination, usually the OneDrive `Markdown` folder. |
+| `state` | Required directory for the journal, lock, last-run report, and logs. |
+| `originals` | Required directory for raw matching email backups. |
+| `rules` | Ordered subject rules. Defaults to the two rules in the example. At least one is required. |
+| `max_message_bytes` | Maximum source file size. Default `52428800` (50 MiB); range 1 through 1073741824. |
+| `timeout_seconds` | Run timeout. Default `600`; range 1 through 3600. Applies to `run`, not `backfill`. |
+| `git.enabled` | Must be `false`; automatic Git publishing is unavailable through the CLI. |
+| `git.archive_repo`, `git.parent_repo`, `git.remote`, `git.branch` | Reserved Git settings; unused with publishing disabled. Remote and branch default to `origin` and `main`. |
+
+Relative paths resolve against the configuration file's directory, not the shell's working directory. Paths do not expand `$HOME`, `%USERPROFILE%`, or `~`; use actual paths. Unknown fields are rejected.
+
+The five directories must not overlap, except that `shared` may be a strict child of `input`. That shared subtree is skipped during scanning. Existing links and junctions are resolved when validating paths.
+
+Rules match case-insensitive subject substrings; the first match wins. Duplicate subjects are rejected, and categories must be either `canvas-digest` or `program-announcement`. Unmatched messages are scanned but produce no notes or original backups.
+
+## Output and repeat runs
+
+Each Markdown destination has this layout:
+
+```text
+canvas-digest/
+  2026-09-13-recent-canvas-notifications-<12-character-hash>.md
+program-announcement/
+  2026-09-13-weekly-announcement-<12-character-hash>.md
 ```
 
----
+Filenames use the UTC date from the first usable `Received` header, falling back to `Date`, or `undated` if neither is usable. The subject becomes a lowercase slug, and the suffix is the first 12 characters of the raw email's SHA-256. Identical bytes produce the same filename; a modified export can produce a separate note even if its Message-ID is the same.
+
+Frontmatter contains `title`, `date`, `from`, `sender_address`, `category`, `message_id`, `source_sha256`, `local_source`, and `attachments`. The `local_source` value currently uses a legacy `.local-imports/originals/` path. Locate the actual original using `originals/<source_sha256>.eml` under your configured originals directory.
+
+Existing identical notes are left unchanged. Differing notes are updated only when their source marker and journal hash identify an unedited generated file; otherwise processing reports a conflict. Archive and shared writes happen sequentially, so one destination can succeed before the other fails. The tool does not propagate handwritten edits between destinations or delete old notes when input files disappear.
+
+Keep personal annotations in separate files. Share the configured `shared` folder with intended readers; sharing its parent input folder also exposes raw emails. Notes retain sender information and links, and originals retain full message contents and attachments.
+
+### Copy an existing Markdown archive
+
+```powershell
+& $hmbaExe backfill --config $hmbaConfig --dry-run
+& $hmbaExe backfill --config $hmbaConfig
+```
+
+Backfill recursively copies **all `.md` files** under `archive` to matching relative paths under `shared`, including handwritten notes and README files. It needs no source `.eml`, skips identical destinations, and reports differing destinations as conflicts. It may add a shared-folder README when files were copied and no README exists. Backfill currently does not acquire the run lock; execute it while conversion is idle. Inspect the JSON `errors` array as well as the exit code.
+
+## Windows automation
+
+After a successful manual run, install the task using the executable in its permanent location:
+
+```powershell
+& $hmbaExe schedule install --config $hmbaConfig
+& $hmbaExe schedule status
+& $hmbaExe schedule run
+```
+
+The task is named `HMBAMailSync`. Installation creates or replaces that task and writes `run-task.vbs` beside the config. It runs as the current signed-in user, silently through `wscript.exe`, two minutes after logon. Battery execution is allowed, overlapping task instances are ignored, and Task Scheduler imposes a 15-minute execution limit in addition to the application's timeout.
+
+**The installed trigger is logon-only.** There is no continuous watcher or recurring polling interval. Mail arriving later waits for another manual or scheduled invocation. `schedule run` starts the background task and returns before conversion completes; inspect `status` and the logs afterward.
+
+To disable automation and remove its launcher:
+
+```powershell
+& $hmbaExe schedule remove --config $hmbaConfig
+```
+
+This preserves your executable, configuration, notes, originals, and state. Omitting `--config` removes only the task. For upgrades, wait for active conversion to finish and rerun `package.ps1` with the same target directory; existing configuration is preserved. Reinstall the task if the executable or config location changes.
+
+## CLI reference
+
+Use the full executable path or `$hmbaExe` from the quickstart; the installer does not change `PATH`.
+
+| Command | Purpose |
+| --- | --- |
+| `help` or `--help` | List supported commands. |
+| `version` | Print the build version (`dev` for a plain Go build). |
+| `check --config PATH` | Validate config and report local diagnostics as JSON. |
+| `run --config PATH [--dry-run] [--timeout DURATION]` | Convert local mail; a positive timeout such as `5m` overrides the config timeout. |
+| `backfill --config PATH [--dry-run]` | Copy existing archive Markdown into shared. |
+| `status --config PATH` | Show lock status, log count, and saved last-run report. |
+| `schedule install --config PATH` | Register the Windows task and launcher. |
+| `schedule status` | Query task registration and execution status. |
+| `schedule run` | Request a background run of the installed task. |
+| `schedule remove [--config PATH]` | Remove the task and optionally its launcher. |
+
+Reports go to stdout; command errors go to stderr. Inspect `$LASTEXITCODE` immediately after invocation.
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | Success or no changes required. Review report errors too; see known gaps below. |
+| `1` | Failure encoding or writing a report. |
+| `2` | Invalid arguments or configuration, including enabling Git publishing. |
+| `3` | Input directory unavailable (`check` or `run`). |
+| `4` | Conversion, publication, backfill, or scheduler failure/conflict. |
+| `5` | Reserved for Git publication blocking; not currently emitted by the CLI. |
+| `6` | A live conversion already holds the state-directory run lock. |
+
+## Troubleshooting and recovery
+
+| Symptom | What to inspect or do |
+| --- | --- |
+| Input unavailable | Verify `input`, the OneDrive account, local sync, and folder permissions. `run` waits up to 10 seconds for the directory. |
+| Scanned is zero | Check the flow's run history and confirm local files end in `.eml`. The shared subtree is excluded. |
+| Scanned is positive, matched is zero | Compare email Subject headers with configured substring rules. |
+| Message fails to parse | Confirm the flow saved the exported email rather than HTML body text. Inspect the per-message error or source file locally. |
+| Message exceeds size limit | Inspect its size and adjust `max_message_bytes` within the allowed range if appropriate. |
+| Notes missing online | Verify local shared output first, then inspect OneDrive sync status and sharing permissions. |
+| Destination conflict | Preserve the edited file outside the generated destination, then move it out of the way and rerun to regenerate. There is no force-overwrite option. |
+| Overlapping run | Wait for the active run; check `status`. A leftover lock file alone is not proof of an active lock. |
+| Background task does nothing | Check `schedule status`, Task Scheduler history, executable/config locations, and Windows Script Host availability. Run the CLI directly to see errors. |
+| Status looks stale | Empty input refreshes `last-run.json`; early failures and dry runs do not. Inspect recent logs and direct command output. |
+
+Runtime files live under the configured `state` directory:
+
+- `journal.json` records source and generated hashes used to distinguish generated content from manual edits.
+- `last-run.json` contains a saved conversion report, including message metadata.
+- `logs/run-*.log` contains operational logs, with rotation targeting 15 files. Sanitization masks selected token-like query values; paths and subject-derived filenames can remain.
+
+Back up configuration, the journal, originals, and edited notes before moving an installation or recovering from a failure. Do not delete the journal as a routine reset: losing generated hashes can turn future updates into conflicts. Sources are not automatically removed or rotated, so input and original storage grow over time.
+
+See [repository review](docs/repository-review.md) for architecture, operating workflow inspection, and remediation details.
+
+## Development
+
+```powershell
+# Vet and run the test suite
+powershell -ExecutionPolicy Bypass -File scripts/test.ps1
+
+# Build without installing or registering a task
+powershell -ExecutionPolicy Bypass -File scripts/build.ps1 -Version 0.1.0
+```
+
+Equivalent core checks are `go mod verify`, `go vet ./...`, `go test ./...`, and `go build ./cmd/hmba-mail`. [CI](.github/workflows/ci.yml) runs verification, vet, tests, and a build on Windows and Ubuntu, and automatically bundles release archives and SHA256 checksums on version tags (`v*`). Scheduler integration is Windows-specific; the non-Windows implementation reports it as unsupported. Unit tests do not establish that a live Outlook/OneDrive flow or registered Windows task works.
+
+| Path | Responsibility |
+| --- | --- |
+| `cmd/hmba-mail` | CLI parsing, diagnostics, reports, and exit codes. |
+| `internal/config` | Configuration validation, path resolution, subject rules. |
+| `internal/eml`, `internal/render`, `internal/naming` | MIME parsing, Markdown generation, deterministic filenames. |
+| `internal/publish` | Discovery, dual writes, backfill, originals, journal, locks, logs. |
+| `internal/scheduler` | Windows task registration and launcher. |
+| `internal/gitpub` | Git implementation currently gated off by config validation. |
+| `internal/report` | JSON report types and exit-code constants. |
+| `scripts` | Build, test, and local installation scripts. |
+
+For changes, run the checks above and describe relevant manual validation. Use synthetic or redacted emails in tests and bug reports. Do not commit real mail, local configuration, generated notes, or runtime reports. Releases bundle the standalone Windows executable, example configuration, instructions, and checksums.
+
 
 ## License
 
-MIT License. Copyright (c) 2026 Daniel Rust. See [LICENSE](LICENSE) for details.
+MIT License. Copyright (c) 2026 Daniel Rust. See [LICENSE](LICENSE).

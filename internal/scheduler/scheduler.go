@@ -12,6 +12,9 @@ import (
 // TaskName is the identifier registered in Windows Task Scheduler.
 const TaskName = "HMBAMailSync"
 
+// ErrSchedulerUnavailable indicates the Windows Task Scheduler service is disabled or inaccessible on the host.
+var ErrSchedulerUnavailable = errors.New("windows task scheduler service unavailable")
+
 // TaskStatus represents the current state and configuration of the scheduled task.
 type TaskStatus struct {
 	Installed                  bool   `json:"installed"`

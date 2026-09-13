@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -67,8 +68,71 @@ func TestStatusNonExistentTask(t *testing.T) {
 	ctx := context.Background()
 	status, err := Status(ctx)
 	if err != nil {
+		if errors.Is(err, ErrSchedulerUnavailable) || strings.Contains(err.Error(), "service unavailable") {
+			t.Skipf("skipping: Windows Task Scheduler service unavailable on this host: %v", err)
+		}
 		t.Fatalf("Status failed: %v", err)
 	}
 	// The task may or may not be installed yet; status must return without error
 	t.Logf("Task status: installed=%v, state=%s", status.Installed, status.State)
 }
+
+func TestWindowsSchedulerLifecycle(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("skipping Windows Task Scheduler lifecycle test on non-Windows")
+	}
+	if testing.Short() {
+		t.Skip("skipping Windows Task Scheduler lifecycle test in short mode")
+	}
+
+	ctx := context.Background()
+	_, err := Status(ctx)
+	if err != nil {
+		if errors.Is(err, ErrSchedulerUnavailable) || strings.Contains(err.Error(), "service unavailable") {
+			t.Skipf("skipping: Windows Task Scheduler service unavailable on this host: %v", err)
+		}
+		t.Fatalf("initial Status failed: %v", err)
+	}
+
+	tmp := t.TempDir()
+	exePath := filepath.Join(tmp, "fake-hmba.exe")
+	cfgPath := filepath.Join(tmp, "config.json")
+	if err := os.WriteFile(exePath, []byte("fake exe"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(`{"version":1}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	instStatus, err := Install(ctx, cfgPath, exePath)
+	if err != nil {
+		if errors.Is(err, ErrSchedulerUnavailable) || strings.Contains(err.Error(), "Access is denied") || strings.Contains(err.Error(), "service unavailable") {
+			t.Skipf("skipping: insufficient permissions or Task Scheduler unavailable: %v", err)
+		}
+		t.Fatalf("Install failed: %v", err)
+	}
+	if !instStatus.Installed {
+		t.Errorf("expected task to be installed")
+	}
+
+	st, err := Status(ctx)
+	if err != nil {
+		t.Fatalf("Status after install failed: %v", err)
+	}
+	if !st.Installed {
+		t.Errorf("expected status to report installed=true")
+	}
+
+	if err := Remove(ctx, cfgPath); err != nil {
+		t.Fatalf("Remove failed: %v", err)
+	}
+
+	stAfter, err := Status(ctx)
+	if err != nil {
+		t.Fatalf("Status after remove failed: %v", err)
+	}
+	if stAfter.Installed {
+		t.Errorf("expected status to report installed=false after removal")
+	}
+}
+

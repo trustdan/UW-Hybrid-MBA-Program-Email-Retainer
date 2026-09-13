@@ -1,21 +1,30 @@
 # Binaries and build artifacts
 dist/
+release-pkg/
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
+*.zip
 
 # Runtime state, logs, and locks
 state/
 *.lock
 *.log
+*.tmp
+journal.json
+last-run.json
+
+# Local configuration
+config.json
 
 # Source mail originals and local data
 originals/
 .local-imports/
 manual-exports/
 *.eml
+!internal/render/testdata/*.eml
 *.pst
 *.ost
 
@@ -23,3 +32,4 @@ manual-exports/
 Thumbs.db
 .DS_Store
 Desktop.ini
+

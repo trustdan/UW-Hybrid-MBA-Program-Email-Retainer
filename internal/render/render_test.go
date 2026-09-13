@@ -1,4 +1,4 @@
-﻿package render
+package render
 
 import (
 	"bytes"
@@ -115,32 +115,57 @@ func TestRenderEmptyBodyNote(t *testing.T) {
 }
 
 func TestRealEMLConversionFidelity(t *testing.T) {
-	// Path to preserved originals relative to local-go/internal/render
-	orig1 := filepath.Join("..", "..", "..", ".local-imports", "originals", "8d78cf98f702c0a4e48644ad37ffe70b8e104479c42eb2a369186b150507e3ca.eml")
-	data1, err := os.ReadFile(orig1)
+	fixturePath := filepath.Join("testdata", "sample.eml")
+	data, err := os.ReadFile(fixturePath)
 	if err != nil {
-		t.Skipf("original 1 not found (skipped on other machines): %v", err)
+		t.Fatalf("failed to read test fixture: %v", err)
 	}
 
-	msg1, err := eml.Parse(data1, []config.Rule{
+	msg, err := eml.Parse(data, []config.Rule{
 		{Subject: "Recent Canvas Notifications", Category: "canvas-digest"},
 	})
 	if err != nil {
-		t.Fatalf("parse real EML 1: %v", err)
+		t.Fatalf("parse test fixture: %v", err)
 	}
 
-	rendered1, meta1, err := Render(msg1, "canvas-digest")
+	rendered, meta, err := Render(msg, "canvas-digest")
 	if err != nil {
-		t.Fatalf("render real EML 1: %v", err)
+		t.Fatalf("render test fixture: %v", err)
 	}
 
-	if meta1.SenderAddress != "danieltuckerrust@gmail.com" {
-		t.Errorf("expected sender danieltuckerrust@gmail.com, got %s", meta1.SenderAddress)
+	if meta.SenderAddress != "canvas@uw.edu" {
+		t.Errorf("expected sender canvas@uw.edu, got %s", meta.SenderAddress)
 	}
-	if !bytes.Contains(rendered1, []byte("This Message Is From an Untrusted Sender")) {
-		t.Errorf("expected body text in rendered1")
+	if !bytes.Contains(rendered, []byte("This Message Is From an Untrusted Sender")) {
+		t.Errorf("expected body text in rendered")
 	}
-	if !bytes.Contains(rendered1, []byte(`date: "2026-09-12T09:55:26-05:00"`)) {
-		t.Errorf("expected RFC3339 date in frontmatter, got:\n%s", string(rendered1[:300]))
+	if !bytes.Contains(rendered, []byte(`date: "2026-09-12T09:55:26-05:00"`)) {
+		t.Errorf("expected RFC3339 date in frontmatter, got:\n%s", string(rendered[:300]))
+	}
+	if !bytes.Contains(rendered, []byte(`| Course | Assignment | Due Date |`)) {
+		t.Errorf("expected table in rendered Markdown, got:\n%s", string(rendered))
+	}
+	expectedSource := "originals/" + msg.SHA256 + ".eml"
+	if meta.LocalSource != expectedSource {
+		t.Errorf("expected portable local source %s, got %s", expectedSource, meta.LocalSource)
 	}
 }
+
+func TestRenderCustomProvenanceSource(t *testing.T) {
+	msg := &eml.Message{
+		SHA256:   "hash123",
+		Subject:  "Test",
+		Category: "canvas-digest",
+	}
+	data, meta, err := RenderWithSource(msg, "canvas-digest", ".hmba-mail/originals/hash123.eml")
+	if err != nil {
+		t.Fatalf("RenderWithSource: %v", err)
+	}
+	if meta.LocalSource != ".hmba-mail/originals/hash123.eml" {
+		t.Errorf("expected custom local_source, got %s", meta.LocalSource)
+	}
+	if !bytes.Contains(data, []byte(`local_source: ".hmba-mail/originals/hash123.eml"`)) {
+		t.Errorf("expected custom local_source in frontmatter, got:\n%s", string(data))
+	}
+}
+

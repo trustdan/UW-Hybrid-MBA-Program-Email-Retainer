@@ -28,6 +28,8 @@ type JournalRecord struct {
 }
 
 // LoadJournal loads or initializes the state journal from the state directory.
+// It distinguishes a missing journal (clean initial state) from an unreadable
+// or corrupt journal file, returning an error for the latter.
 func LoadJournal(stateDir string) (*StateJournal, error) {
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
@@ -38,8 +40,35 @@ func LoadJournal(stateDir string) (*StateJournal, error) {
 		Records: make(map[string]JournalRecord),
 	}
 	data, err := os.ReadFile(path)
-	if err == nil {
-		_ = json.Unmarshal(data, &sj.Records)
+	if os.IsNotExist(err) {
+		return sj, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read journal %s: %w", path, err)
+	}
+	if err := json.Unmarshal(data, &sj.Records); err != nil {
+		return nil, fmt.Errorf("corrupt journal %s: %w", path, err)
+	}
+	return sj, nil
+}
+
+// LoadJournalReadOnly loads the state journal in read-only mode without creating
+// the state directory or journal file if absent.
+func LoadJournalReadOnly(stateDir string) (*StateJournal, error) {
+	path := filepath.Join(stateDir, "journal.json")
+	sj := &StateJournal{
+		path:    path,
+		Records: make(map[string]JournalRecord),
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return sj, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read journal %s: %w", path, err)
+	}
+	if err := json.Unmarshal(data, &sj.Records); err != nil {
+		return nil, fmt.Errorf("corrupt journal %s: %w", path, err)
 	}
 	return sj, nil
 }

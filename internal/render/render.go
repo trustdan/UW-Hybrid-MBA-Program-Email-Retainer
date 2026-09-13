@@ -1,4 +1,4 @@
-﻿// Package render converts parsed emails into deterministic UTF-8 Markdown with YAML frontmatter.
+// Package render converts parsed emails into deterministic UTF-8 Markdown with YAML frontmatter.
 package render
 
 import (
@@ -50,8 +50,14 @@ func UnwrapLink(val string) string {
 	return val
 }
 
-// Render produces the complete Markdown document including frontmatter, title, body, and attachment notes.
+// Render produces the complete Markdown document using a default portable originals reference.
 func Render(msg *eml.Message, category string) ([]byte, Metadata, error) {
+	return RenderWithSource(msg, category, "")
+}
+
+// RenderWithSource produces the complete Markdown document including frontmatter, title, body,
+// and attachment notes, recording sourceRef (or a portable default) in local_source.
+func RenderWithSource(msg *eml.Message, category string, sourceRef string) ([]byte, Metadata, error) {
 	subject := msg.Subject
 	var dateStr *string
 	if msg.Date != "" {
@@ -64,6 +70,10 @@ func Render(msg *eml.Message, category string) ([]byte, Metadata, error) {
 		}
 	}
 
+	if sourceRef == "" {
+		sourceRef = fmt.Sprintf("originals/%s.eml", msg.SHA256)
+	}
+
 	metadata := Metadata{
 		Title:         subject,
 		Date:          dateStr,
@@ -72,7 +82,7 @@ func Render(msg *eml.Message, category string) ([]byte, Metadata, error) {
 		Category:      category,
 		MessageID:     msg.MessageID,
 		SourceSHA256:  msg.SHA256,
-		LocalSource:   fmt.Sprintf(".local-imports/originals/%s.eml", msg.SHA256),
+		LocalSource:   sourceRef,
 		Attachments:   msg.Attachments,
 	}
 	if metadata.Attachments == nil {

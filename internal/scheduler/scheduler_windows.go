@@ -32,13 +32,28 @@ func runPowerShell(ctx context.Context, script string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
+func isSchedulerUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Task Scheduler service unavailable") ||
+		strings.Contains(msg, "Schedule.Service") ||
+		strings.Contains(msg, "0x80070003")
+}
+
 func installTask(ctx context.Context, launcherPath string) (*TaskStatus, error) {
 	psScript := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 $launcher = %q
-$service = New-Object -ComObject("Schedule.Service")
-$service.Connect()
-$root = $service.GetFolder("\")
+try {
+    $service = New-Object -ComObject("Schedule.Service")
+    $service.Connect()
+    $root = $service.GetFolder("\")
+} catch {
+    Write-Error "Task Scheduler service unavailable: $_"
+    exit 10
+}
 
 $taskDef = $service.NewTask(0)
 $taskDef.RegistrationInfo.Description = "HMBA Email Automation - local EML conversion, archive and OneDrive sync"
@@ -67,6 +82,9 @@ $reg = $root.RegisterTaskDefinition(%q, $taskDef, 6, $null, $null, 3)
 `, launcherPath, TaskName)
 
 	if _, err := runPowerShell(ctx, psScript); err != nil {
+		if isSchedulerUnavailable(err) {
+			return nil, fmt.Errorf("%w: %v", ErrSchedulerUnavailable, err)
+		}
 		return nil, fmt.Errorf("register task definition: %w", err)
 	}
 
@@ -77,9 +95,14 @@ func queryStatus(ctx context.Context) (*TaskStatus, error) {
 	psScript := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 $taskName = %q
-$service = New-Object -ComObject("Schedule.Service")
-$service.Connect()
-$root = $service.GetFolder("\")
+try {
+    $service = New-Object -ComObject("Schedule.Service")
+    $service.Connect()
+    $root = $service.GetFolder("\")
+} catch {
+    Write-Error "Task Scheduler service unavailable: $_"
+    exit 10
+}
 try {
     $task = $root.GetTask($taskName)
 } catch {
@@ -123,6 +146,9 @@ $res | ConvertTo-Json -Compress
 
 	out, err := runPowerShell(ctx, psScript)
 	if err != nil {
+		if isSchedulerUnavailable(err) {
+			return nil, fmt.Errorf("%w: %v", ErrSchedulerUnavailable, err)
+		}
 		return nil, fmt.Errorf("query task status: %w", err)
 	}
 
@@ -147,13 +173,13 @@ func removeTask(ctx context.Context) error {
 	psScript := fmt.Sprintf(`
 $ErrorActionPreference = 'SilentlyContinue'
 $taskName = %q
-$service = New-Object -ComObject("Schedule.Service")
-$service.Connect()
-$root = $service.GetFolder("\")
 try {
+    $service = New-Object -ComObject("Schedule.Service")
+    $service.Connect()
+    $root = $service.GetFolder("\")
     $root.DeleteTask($taskName, 0)
 } catch {
-    # ignored if not exists
+    # ignored if not exists or service unavailable
 }
 `, TaskName)
 

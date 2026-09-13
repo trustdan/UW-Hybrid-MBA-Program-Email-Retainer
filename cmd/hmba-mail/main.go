@@ -1,4 +1,4 @@
-﻿// hmba-mail is the local-file workflow; it never invokes the Graph prototype.
+// hmba-mail is the local-file workflow; it never invokes the Graph prototype.
 package main
 
 import (
@@ -156,6 +156,14 @@ func handleRun(ctx context.Context, args []string, out, stderr io.Writer) int {
 	defer cancel()
 
 	rep, err := publish.Run(runCtx, c, *dryRun)
+	if rep != nil {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		if encErr := enc.Encode(rep); encErr != nil {
+			fmt.Fprintln(stderr, encErr)
+			return report.ExitReportFailure
+		}
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "run failed: %v\n", err)
 		if strings.Contains(err.Error(), "run lock active") {
@@ -166,13 +174,7 @@ func handleRun(ctx context.Context, args []string, out, stderr io.Writer) int {
 		}
 		return report.ExitPartialFailure
 	}
-	enc := json.NewEncoder(out)
-	enc.SetIndent("", "  ")
-	if err = enc.Encode(rep); err != nil {
-		fmt.Fprintln(stderr, err)
-		return report.ExitReportFailure
-	}
-	if rep.Counts.Failed > 0 || rep.Counts.Conflicts > 0 {
+	if rep.Counts.Failed > 0 || rep.Counts.Conflicts > 0 || len(rep.Errors) > 0 {
 		return report.ExitPartialFailure
 	}
 	return report.ExitSuccess
@@ -193,17 +195,22 @@ func handleBackfill(ctx context.Context, args []string, out, stderr io.Writer) i
 		return report.ExitInvalidUsage
 	}
 	rep, err := publish.Backfill(ctx, c, *dryRun)
+	if rep != nil {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		if encErr := enc.Encode(rep); encErr != nil {
+			fmt.Fprintln(stderr, encErr)
+			return report.ExitReportFailure
+		}
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "backfill failed: %v\n", err)
+		if strings.Contains(err.Error(), "run lock active") {
+			return report.ExitOverlappingRun
+		}
 		return report.ExitPartialFailure
 	}
-	enc := json.NewEncoder(out)
-	enc.SetIndent("", "  ")
-	if err = enc.Encode(rep); err != nil {
-		fmt.Fprintln(stderr, err)
-		return report.ExitReportFailure
-	}
-	if rep.Conflicts > 0 {
+	if rep.Conflicts > 0 || len(rep.Errors) > 0 {
 		return report.ExitPartialFailure
 	}
 	return report.ExitSuccess
@@ -220,6 +227,7 @@ type StatusReport struct {
 	Lock          StatusLockReport  `json:"lock"`
 	LogsCount     int               `json:"logs_count"`
 	LastRun       *report.RunReport `json:"last_run,omitempty"`
+	Error         string            `json:"error,omitempty"`
 }
 
 func handleStatus(args []string, out, stderr io.Writer) int {
@@ -260,9 +268,15 @@ func handleStatus(args []string, out, stderr io.Writer) int {
 	data, err := os.ReadFile(lastRunPath)
 	if os.IsNotExist(err) {
 		rep.Status = "no_previous_run"
-	} else if err == nil {
+	} else if err != nil {
+		rep.Status = "unreadable_last_run"
+		rep.Error = fmt.Sprintf("read last-run.json: %v", err)
+	} else {
 		var lastRun report.RunReport
-		if err := json.Unmarshal(data, &lastRun); err == nil {
+		if unmarshalErr := json.Unmarshal(data, &lastRun); unmarshalErr != nil {
+			rep.Status = "corrupt_last_run"
+			rep.Error = fmt.Sprintf("decode last-run.json: %v", unmarshalErr)
+		} else {
 			rep.LastRun = &lastRun
 		}
 	}

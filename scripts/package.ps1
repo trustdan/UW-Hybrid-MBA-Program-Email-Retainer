@@ -1,7 +1,8 @@
 # package.ps1 builds and packages hmba-mail into $HOME\.hmba-mail (or custom target)
 param(
     [string]$TargetDir = (Join-Path $HOME ".hmba-mail"),
-    [string]$Version = "0.1.0"
+    [string]$Version = "0.1.0",
+    [string]$OneDrivePath = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,8 +62,10 @@ Write-Host "Installed executable to: $targetExe"
 # Generate local default config if not present
 $cfgPath = Join-Path $TargetDir "config.json"
 if (-not (Test-Path $cfgPath)) {
-    $oneDrive = [System.Environment]::GetEnvironmentVariable("OneDriveConsumer")
+    $oneDrive = $OneDrivePath
     if (-not $oneDrive) { $oneDrive = [System.Environment]::GetEnvironmentVariable("OneDriveCommercial") }
+    if (-not $oneDrive) { $oneDrive = [System.Environment]::GetEnvironmentVariable("OneDrive") }
+    if (-not $oneDrive) { $oneDrive = [System.Environment]::GetEnvironmentVariable("OneDriveConsumer") }
     if (-not $oneDrive) { $oneDrive = Join-Path $HOME "OneDrive - UW" }
     
     $defaultInput = Join-Path $oneDrive "HMBA-Emails"

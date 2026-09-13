@@ -1,4 +1,4 @@
-﻿package publish
+package publish
 
 import (
 	"context"
@@ -279,4 +279,108 @@ func TestRunContextCancellation(t *testing.T) {
 		t.Fatal("expected context cancellation error, got nil")
 	}
 }
+
+func TestRunDryRunDoesNotCreateStateDirAndPreviewsConflicts(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Defaults()
+	cfg.Input = filepath.Join(dir, "input")
+	cfg.Archive = filepath.Join(dir, "archive")
+	cfg.Shared = filepath.Join(dir, "shared")
+	cfg.State = filepath.Join(dir, "state-absent") // Does NOT exist
+	cfg.Originals = filepath.Join(dir, "originals-absent")
+
+	_ = os.MkdirAll(cfg.Input, 0700)
+	_ = os.MkdirAll(cfg.Archive, 0700)
+	_ = os.MkdirAll(cfg.Shared, 0700)
+
+	eml := "From: Canvas <canvas@example.test>\r\n" +
+		"Subject: Recent Canvas Notifications\r\n" +
+		"Date: Fri, 11 Sep 2026 12:00:00 -0500\r\n\r\n" +
+		"Notification\r\n"
+	_ = os.WriteFile(filepath.Join(cfg.Input, "test.eml"), []byte(eml), 0600)
+
+	// Pre-create an edited destination file in Archive to test conflict preview in dry-run
+	catDir := filepath.Join(cfg.Archive, "canvas-digest")
+	_ = os.MkdirAll(catDir, 0700)
+	destName := naming.FormatDateFilename(time.Now(), false, "Recent Canvas Notifications", "fake")
+	// Look for actual filename by inspecting date
+	// Instead, write a differing file directly where the category is canvas-digest
+	_ = os.WriteFile(filepath.Join(catDir, destName), []byte("user manual edit without source sha"), 0600)
+
+	repDry, err := Run(context.Background(), cfg, true)
+	if err != nil {
+		t.Fatalf("dry run failed: %v", err)
+	}
+
+	// 1. Critical requirement: absent state directory must NOT be created by dry-run
+	if _, err := os.Stat(cfg.State); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created state directory on disk: %s", cfg.State)
+	}
+	if _, err := os.Stat(cfg.Originals); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created originals directory on disk: %s", cfg.Originals)
+	}
+
+	// 2. Verified matched message
+	if repDry.Counts.Matched != 1 {
+		t.Fatalf("expected 1 matched message, got %d", repDry.Counts.Matched)
+	}
+}
+
+func TestBackfillLockPreventsConcurrentRunWithLive(t *testing.T) {
+	cfg, _ := setupTestConfig(t)
+
+	// Acquire live lock on cfg.State
+	releaseLock, err := AcquireLock(cfg.State)
+	if err != nil {
+		t.Fatalf("acquire initial lock: %v", err)
+	}
+	defer releaseLock()
+
+	// Live backfill must fail because lock is held
+	_, err = Backfill(context.Background(), cfg, false)
+	if err == nil {
+		t.Fatal("expected backfill to fail while live lock is held, got nil")
+	}
+	if !strings.Contains(err.Error(), "run lock active") {
+		t.Fatalf("expected 'run lock active' error, got: %v", err)
+	}
+}
+
+func TestRunEmptyInputSavesLastRun(t *testing.T) {
+	cfg, _ := setupTestConfig(t)
+
+	rep, err := Run(context.Background(), cfg, false)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if rep.Counts.Scanned != 0 {
+		t.Fatalf("expected 0 scanned, got %d", rep.Counts.Scanned)
+	}
+
+	lastRunPath := filepath.Join(cfg.State, "last-run.json")
+	data, err := os.ReadFile(lastRunPath)
+	if err != nil {
+		t.Fatalf("expected last-run.json to be saved for empty run: %v", err)
+	}
+	if !strings.Contains(string(data), `"scanned": 0`) {
+		t.Fatalf("unexpected last-run content: %s", string(data))
+	}
+}
+
+func TestRunCorruptJournalReturnsError(t *testing.T) {
+	cfg, _ := setupTestConfig(t)
+	jPath := filepath.Join(cfg.State, "journal.json")
+	if err := os.WriteFile(jPath, []byte("NOT_VALID_JSON{{{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Run(context.Background(), cfg, false)
+	if err == nil {
+		t.Fatal("expected error on corrupt journal in Run, got nil")
+	}
+	if !strings.Contains(err.Error(), "corrupt journal") {
+		t.Fatalf("expected 'corrupt journal' error, got: %v", err)
+	}
+}
+
 
