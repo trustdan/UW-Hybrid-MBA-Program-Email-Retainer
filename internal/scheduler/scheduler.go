@@ -3,10 +3,12 @@ package scheduler
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"unicode/utf16"
 )
 
 // TaskName is the identifier registered in Windows Task Scheduler.
@@ -66,7 +68,15 @@ func WriteLauncher(exePath, configPath string) (string, error) {
 
 	lPath := LauncherPath(absCfg)
 	content := GenerateLauncherScript(absExe, absCfg)
-	if err := os.WriteFile(lPath, []byte(content), 0600); err != nil {
+	// Windows Script Host recognizes UTF-16LE with a BOM, not UTF-8.
+	// Preserve non-ASCII user and OneDrive folder names in the launcher.
+	encoded := utf16.Encode([]rune(content))
+	data := make([]byte, 2+2*len(encoded))
+	binary.LittleEndian.PutUint16(data, 0xfeff)
+	for i, unit := range encoded {
+		binary.LittleEndian.PutUint16(data[2+i*2:], unit)
+	}
+	if err := os.WriteFile(lPath, data, 0600); err != nil {
 		return "", fmt.Errorf("write launcher script: %w", err)
 	}
 	return lPath, nil
@@ -103,10 +113,18 @@ func RunNow(ctx context.Context) error {
 
 // Remove unregisters the scheduled task and removes the launcher if present.
 func Remove(ctx context.Context, configPath string) error {
-	err := removeTask(ctx)
+	return removeWith(ctx, configPath, removeTask)
+}
+
+func removeWith(ctx context.Context, configPath string, unregister func(context.Context) error) error {
+	if err := unregister(ctx); err != nil {
+		return err
+	}
 	if configPath != "" {
 		lPath := LauncherPath(configPath)
-		_ = os.Remove(lPath)
+		if err := os.Remove(lPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove launcher script: %w", err)
+		}
 	}
-	return err
+	return nil
 }

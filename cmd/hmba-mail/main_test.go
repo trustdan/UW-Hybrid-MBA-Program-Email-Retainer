@@ -20,6 +20,21 @@ func TestCLIRejectsUnimplementedOperations(t *testing.T) {
 	}
 }
 
+func TestScheduleRejectsInvalidArgumentsBeforeAction(t *testing.T) {
+	for _, args := range [][]string{
+		{"schedule", "remove", "--confg", "config.json"},
+		{"schedule", "remove", "unexpected"},
+		{"schedule", "remove", "--config"},
+		{"schedule", "run", "--unknown"},
+		{"schedule", "status", "unexpected"},
+	} {
+		var out, stderr bytes.Buffer
+		if code := run(args, &out, &stderr); code != 2 || out.Len() != 0 {
+			t.Fatalf("%v: expected invalid usage without action output, got code=%d out=%s err=%s", args, code, &out, &stderr)
+		}
+	}
+}
+
 func TestCheckDoesNotCreateDestinations(t *testing.T) {
 	dir := t.TempDir()
 	c := config.Defaults()
@@ -187,4 +202,3 @@ func TestRunDryRunDoesNotCreateStateDirCLI(t *testing.T) {
 		t.Fatalf("dry-run created state directory: %s", c.State)
 	}
 }
-

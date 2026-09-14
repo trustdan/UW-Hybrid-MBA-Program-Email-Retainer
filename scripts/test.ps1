@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-Push-Location $repoRoot
+$repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+Push-Location -LiteralPath $repoRoot
 try {
     Write-Host "==> Checking go vet..."
     & go vet ./...

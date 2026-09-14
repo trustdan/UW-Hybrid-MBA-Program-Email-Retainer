@@ -37,7 +37,13 @@ func TestPathsAndMatching(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Input != filepath.Join(filepath.Dir(path), "input") {
+	// Load resolves aliases in the config directory (including Windows 8.3
+	// temp paths); compare against that directory's canonical spelling.
+	base, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Input != filepath.Join(base, "input") {
 		t.Fatal(c.Input)
 	}
 	if c.Match("Re: WEEKLY ANNOUNCEMENT") != "program-announcement" || c.Match("unrelated") != "" {

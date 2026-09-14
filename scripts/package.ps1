@@ -6,16 +6,16 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $distDir = Join-Path $repoRoot "dist"
 
 # Check if a pre-compiled binary is provided (e.g. from a release zip)
 $prebuilt = $null
-if (Test-Path (Join-Path $PSScriptRoot "hmba-mail.exe")) {
+if (Test-Path -LiteralPath (Join-Path $PSScriptRoot "hmba-mail.exe")) {
     $prebuilt = Join-Path $PSScriptRoot "hmba-mail.exe"
-} elseif (Test-Path (Join-Path $repoRoot "hmba-mail.exe")) {
+} elseif (Test-Path -LiteralPath (Join-Path $repoRoot "hmba-mail.exe")) {
     $prebuilt = Join-Path $repoRoot "hmba-mail.exe"
-} elseif (Test-Path (Join-Path $distDir "hmba-mail.exe")) {
+} elseif (Test-Path -LiteralPath (Join-Path $distDir "hmba-mail.exe")) {
     $prebuilt = Join-Path $distDir "hmba-mail.exe"
 }
 
@@ -24,7 +24,7 @@ if ($prebuilt) {
     $distExe = $prebuilt
 } else {
     Write-Host "==> Verifying Go tests..."
-    Push-Location $repoRoot
+    Push-Location -LiteralPath $repoRoot
     try {
         & go test ./...
         if ($LASTEXITCODE -ne 0) { throw "Tests failed" }
@@ -35,8 +35,8 @@ if ($prebuilt) {
         & go build -trimpath -ldflags "-s -w -X main.version=$Version" -o $distExe ./cmd/hmba-mail
         if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 
-        $hash = (Get-FileHash $distExe -Algorithm SHA256).Hash.ToLowerInvariant()
-        Set-Content -Path (Join-Path $distDir "SHA256SUMS") -Value "$hash  hmba-mail.exe"
+        $hash = (Get-FileHash -LiteralPath $distExe -Algorithm SHA256).Hash.ToLowerInvariant()
+        Set-Content -LiteralPath (Join-Path $distDir "SHA256SUMS") -Value "$hash  hmba-mail.exe"
         Write-Host "Built: $distExe ($hash)"
     } finally {
         Pop-Location
@@ -56,12 +56,12 @@ New-Item -ItemType Directory -Force $logsDir | Out-Null
 New-Item -ItemType Directory -Force $origDir | Out-Null
 
 $targetExe = Join-Path $binDir "hmba-mail.exe"
-Copy-Item -Path $distExe -Destination $targetExe -Force
+Copy-Item -LiteralPath $distExe -Destination $targetExe -Force
 Write-Host "Installed executable to: $targetExe"
 
 # Generate local default config if not present
 $cfgPath = Join-Path $TargetDir "config.json"
-if (-not (Test-Path $cfgPath)) {
+if (-not (Test-Path -LiteralPath $cfgPath)) {
     $oneDrive = $OneDrivePath
     if (-not $oneDrive) { $oneDrive = [System.Environment]::GetEnvironmentVariable("OneDriveCommercial") }
     if (-not $oneDrive) { $oneDrive = [System.Environment]::GetEnvironmentVariable("OneDrive") }

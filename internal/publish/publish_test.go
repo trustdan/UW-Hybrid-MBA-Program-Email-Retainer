@@ -141,6 +141,36 @@ func TestRunDualPublicationAndRepeat(t *testing.T) {
 	if repRepeat.Counts.Written != 0 || repRepeat.Counts.Unchanged != 2 {
 		t.Fatalf("expected 0 written, 2 unchanged; got %+v", repRepeat.Counts)
 	}
+	for _, message := range repRepeat.Messages {
+		if message.ArchiveWritten || message.SharedWritten {
+			t.Fatalf("unchanged message reported destination writes: %+v", message)
+		}
+	}
+
+	// Removing one shared copy should repair only that destination, and the
+	// preview and live reports should identify the same work.
+	missingShared := filepath.Join(sharedCanvas, entriesShared[0].Name())
+	if err := os.Remove(missingShared); err != nil {
+		t.Fatal(err)
+	}
+	for _, dryRun := range []bool{true, false} {
+		repRepair, err := Run(context.Background(), cfg, dryRun)
+		if err != nil {
+			t.Fatalf("repair dryRun=%v: %v", dryRun, err)
+		}
+		if repRepair.Counts.Written != 1 || repRepair.Counts.Unchanged != 1 {
+			t.Fatalf("repair dryRun=%v: unexpected counts %+v", dryRun, repRepair.Counts)
+		}
+		for _, message := range repRepair.Messages {
+			wantSharedWrite := message.Category == "canvas-digest"
+			if message.ArchiveWritten || message.SharedWritten != wantSharedWrite {
+				t.Fatalf("repair dryRun=%v: inaccurate write flags %+v", dryRun, message)
+			}
+		}
+	}
+	if _, err := os.Stat(missingShared); err != nil {
+		t.Fatalf("shared copy was not restored: %v", err)
+	}
 }
 
 func TestWriteDestinationConflictWhenUserEdited(t *testing.T) {
@@ -302,9 +332,8 @@ func TestRunDryRunDoesNotCreateStateDirAndPreviewsConflicts(t *testing.T) {
 	// Pre-create an edited destination file in Archive to test conflict preview in dry-run
 	catDir := filepath.Join(cfg.Archive, "canvas-digest")
 	_ = os.MkdirAll(catDir, 0700)
-	destName := naming.FormatDateFilename(time.Now(), false, "Recent Canvas Notifications", "fake")
-	// Look for actual filename by inspecting date
-	// Instead, write a differing file directly where the category is canvas-digest
+	when, found := naming.ParseEmailDate("Fri, 11 Sep 2026 12:00:00 -0500")
+	destName := naming.FormatDateFilename(when, found, "Recent Canvas Notifications", naming.ComputeSHA256([]byte(eml)))
 	_ = os.WriteFile(filepath.Join(catDir, destName), []byte("user manual edit without source sha"), 0600)
 
 	repDry, err := Run(context.Background(), cfg, true)
@@ -323,6 +352,62 @@ func TestRunDryRunDoesNotCreateStateDirAndPreviewsConflicts(t *testing.T) {
 	// 2. Verified matched message
 	if repDry.Counts.Matched != 1 {
 		t.Fatalf("expected 1 matched message, got %d", repDry.Counts.Matched)
+	}
+	if repDry.Counts.Conflicts != 1 || repDry.Counts.Written != 0 {
+		t.Fatalf("expected conflict preview, got %+v", repDry.Counts)
+	}
+}
+
+func TestAtomicWritePreservesDirectory(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "existing-directory")
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWrite(target, []byte("replacement")); err == nil {
+		t.Fatal("expected replacement of directory to fail")
+	}
+	if info, err := os.Stat(target); err != nil || !info.IsDir() {
+		t.Fatalf("original directory was lost: %v", err)
+	}
+}
+
+func TestEmptyRunReportsPersistenceFailure(t *testing.T) {
+	cfg, _ := setupTestConfig(t)
+	if err := os.Mkdir(filepath.Join(cfg.State, "last-run.json"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := Run(context.Background(), cfg, false)
+	if err == nil || rep == nil || len(rep.Errors) == 0 || rep.Status != "run_completed_with_issues" {
+		t.Fatalf("expected report persistence failure: report=%+v err=%v", rep, err)
+	}
+}
+
+func TestSharedConflictPreventsArchiveMutation(t *testing.T) {
+	cfg, _ := setupTestConfig(t)
+	raw := []byte("From: canvas@example.test\r\nSubject: Recent Canvas Notifications\r\n\r\nSynthetic message\r\n")
+	if err := os.WriteFile(filepath.Join(cfg.Input, "message.eml"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := Run(context.Background(), cfg, true)
+	if err != nil || len(preview.Messages) != 1 {
+		t.Fatalf("preview: %+v, %v", preview, err)
+	}
+	msg := preview.Messages[0]
+	shared := filepath.Join(cfg.Shared, msg.Category, msg.Filename)
+	if err := os.MkdirAll(filepath.Dir(shared), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shared, []byte("manual edits"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, dryRun := range []bool{true, false} {
+		rep, err := Run(context.Background(), cfg, dryRun)
+		if err != nil || rep.Counts.Conflicts != 1 || rep.Messages[0].ArchiveWritten {
+			t.Fatalf("dryRun=%v: report=%+v err=%v", dryRun, rep, err)
+		}
+		if _, err := os.Stat(filepath.Join(cfg.Archive, msg.Category, msg.Filename)); !os.IsNotExist(err) {
+			t.Fatal("archive was created despite known shared conflict")
+		}
 	}
 }
 
@@ -382,5 +467,3 @@ func TestRunCorruptJournalReturnsError(t *testing.T) {
 		t.Fatalf("expected 'corrupt journal' error, got: %v", err)
 	}
 }
-
-

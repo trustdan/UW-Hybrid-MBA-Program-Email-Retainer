@@ -37,8 +37,17 @@ func LoadGitJournal(stateDir string) (*GitJournal, error) {
 		ToolCommits: []string{},
 	}
 	data, err := os.ReadFile(path)
-	if err == nil {
-		_ = json.Unmarshal(data, gj)
+	if os.IsNotExist(err) {
+		return gj, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read git journal: %w", err)
+	}
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil, fmt.Errorf("corrupt git journal: expected an object, got null")
+	}
+	if err := json.Unmarshal(data, gj); err != nil {
+		return nil, fmt.Errorf("corrupt git journal: %w", err)
 	}
 	return gj, nil
 }
@@ -62,14 +71,13 @@ func (gj *GitJournal) Save() error {
 		_ = tmpFile.Close()
 		return err
 	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
 	if err := tmpFile.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, gj.path); err == nil {
-		return nil
-	}
-	// Windows fallback
-	_ = os.Remove(gj.path)
 	return os.Rename(tmpPath, gj.path)
 }
 
@@ -92,7 +100,7 @@ func (gj *GitJournal) IsToolCommit(sha string) bool {
 	gj.mu.Lock()
 	defer gj.mu.Unlock()
 	for _, s := range gj.ToolCommits {
-		if strings.HasPrefix(s, sha) || strings.HasPrefix(sha, s) {
+		if sha != "" && s == sha {
 			return true
 		}
 	}
@@ -111,6 +119,12 @@ func (gj *GitJournal) ClearPendingPush(pushedSHA string) {
 // runGit executes a Git command with non-interactive flags and argument arrays.
 // It never invokes a shell and disables interactive terminal prompts.
 func runGit(ctx context.Context, repoDir string, args ...string) (string, error) {
+	out, err := runGitRaw(ctx, repoDir, args...)
+	return strings.TrimSpace(out), err
+}
+
+// runGitRaw preserves whitespace in paths and NUL-delimited filename output.
+func runGitRaw(ctx context.Context, repoDir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = repoDir
 
@@ -131,16 +145,57 @@ func runGit(ctx context.Context, repoDir string, args ...string) (string, error)
 		return "", fmt.Errorf("git %s failed: %w (output: %s)", strings.Join(args, " "), err, errMsg)
 	}
 
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout.String(), nil
+}
+
+func runGitPaths(ctx context.Context, repoDir string, args ...string) ([]string, error) {
+	out, err := runGitRaw(ctx, repoDir, args...)
+	if err != nil || out == "" {
+		return nil, err
+	}
+	return strings.Split(strings.TrimSuffix(out, "\x00"), "\x00"), nil
+}
+
+// canonicalPath resolves aliases, including existing ancestors of deleted files.
+func canonicalPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return resolved, nil
+	}
+	if !os.IsNotExist(err) || filepath.Dir(abs) == abs {
+		return "", err
+	}
+	parent, err := canonicalPath(filepath.Dir(abs))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, filepath.Base(abs)), nil
+}
+
+func relativeRepoPath(repoRoot, path string) (string, error) {
+	root, err := canonicalPath(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	file, err := canonicalPath(path)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, file)
+	return filepath.ToSlash(rel), err
 }
 
 // FindRepoRoot discovers the root directory of the parent Git repository.
 func FindRepoRoot(ctx context.Context, startDir string) (string, error) {
-	out, err := runGit(ctx, startDir, "rev-parse", "--show-toplevel")
+	out, err := runGitRaw(ctx, startDir, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", fmt.Errorf("find git repository root from %s: %w", startDir, err)
 	}
-	return filepath.Clean(filepath.FromSlash(out)), nil
+	return filepath.Clean(filepath.FromSlash(strings.TrimSuffix(out, "\n"))), nil
 }
 
 // Preflight verifies the repository is in a safe state for automated commits.
@@ -150,7 +205,18 @@ func Preflight(ctx context.Context, repoRoot string, expectedRemote, expectedBra
 	if err != nil {
 		return err
 	}
-	if !strings.EqualFold(actualRoot, filepath.Clean(repoRoot)) {
+	// Git may expand Windows 8.3 names to long names. Compare directory
+	// identity so aliases of the same root are accepted without accepting
+	// a different directory (including a subdirectory of the repository).
+	configuredInfo, err := os.Stat(repoRoot)
+	if err != nil {
+		return fmt.Errorf("stat configured repo root %s: %w", repoRoot, err)
+	}
+	actualInfo, err := os.Stat(actualRoot)
+	if err != nil {
+		return fmt.Errorf("stat discovered repo root %s: %w", actualRoot, err)
+	}
+	if !os.SameFile(configuredInfo, actualInfo) {
 		return fmt.Errorf("configured repo root %s does not match discovered root %s", repoRoot, actualRoot)
 	}
 
@@ -171,13 +237,13 @@ func Preflight(ctx context.Context, repoRoot string, expectedRemote, expectedBra
 	}
 
 	// 4. Verify no merge, rebase, or cherry-pick in progress
-	gitDirOut, err := runGit(ctx, repoRoot, "rev-parse", "--git-dir")
+	gitDirOut, err := runGitRaw(ctx, repoRoot, "rev-parse", "--git-dir")
 	if err != nil {
 		return fmt.Errorf("locate .git dir: %w", err)
 	}
-	gitDir := filepath.Join(repoRoot, filepath.FromSlash(gitDirOut))
-	if !filepath.IsAbs(gitDirOut) {
-		gitDir = filepath.Clean(filepath.Join(repoRoot, gitDirOut))
+	gitDir := filepath.FromSlash(strings.TrimSuffix(gitDirOut, "\n"))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(repoRoot, gitDir)
 	}
 
 	conflicts := []string{"MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD"}
@@ -188,23 +254,24 @@ func Preflight(ctx context.Context, repoRoot string, expectedRemote, expectedBra
 	}
 
 	// 5. Inspect pre-existing staged files
-	stagedOut, err := runGit(ctx, repoRoot, "diff", "--cached", "--name-only")
+	stagedPaths, err := runGitPaths(ctx, repoRoot, "diff", "--cached", "--name-only", "-z")
 	if err != nil {
 		return fmt.Errorf("check staged files: %w", err)
 	}
 
-	if stagedOut != "" {
+	if len(stagedPaths) != 0 {
 		allowedMap := make(map[string]bool)
 		for _, f := range allowedStagedFiles {
-			rel, _ := filepath.Rel(repoRoot, f)
-			allowedMap[filepath.ToSlash(rel)] = true
+			rel, err := relativeRepoPath(repoRoot, f)
+			if err != nil {
+				return fmt.Errorf("resolve allowed staged file %s: %w", f, err)
+			}
+			allowedMap[rel] = true
 		}
 
-		stagedLines := strings.Split(stagedOut, "\n")
 		var unrelated []string
-		for _, line := range stagedLines {
-			line = strings.TrimSpace(line)
-			if line != "" && !allowedMap[filepath.ToSlash(line)] {
+		for _, line := range stagedPaths {
+			if !allowedMap[line] {
 				unrelated = append(unrelated, line)
 			}
 		}
@@ -241,7 +308,7 @@ func StageAndCommit(ctx context.Context, repoRoot string, archiveFiles []string,
 	// 1. Verify every file path is inside emails/archive/
 	var relPaths []string
 	for _, path := range archiveFiles {
-		rel, err := filepath.Rel(repoRoot, path)
+		rel, err := relativeRepoPath(repoRoot, path)
 		if err != nil {
 			return "", fmt.Errorf("rel path for %s: %w", path, err)
 		}
@@ -254,17 +321,17 @@ func StageAndCommit(ctx context.Context, repoRoot string, archiveFiles []string,
 
 	// 2. Stage only the exact managed archive files
 	for _, rel := range relPaths {
-		if _, err := runGit(ctx, repoRoot, "add", "--", rel); err != nil {
+		if _, err := runGit(ctx, repoRoot, "--literal-pathspecs", "add", "--", rel); err != nil {
 			return "", fmt.Errorf("git add %s: %w", rel, err)
 		}
 	}
 
 	// 3. Verify staged diff contains ONLY the intended files
-	stagedOut, err := runGit(ctx, repoRoot, "diff", "--cached", "--name-only")
+	stagedPaths, err := runGitPaths(ctx, repoRoot, "diff", "--cached", "--name-only", "-z")
 	if err != nil {
 		return "", fmt.Errorf("verify staged files: %w", err)
 	}
-	if stagedOut == "" {
+	if len(stagedPaths) == 0 {
 		// Nothing actually changed
 		return "", nil
 	}
@@ -274,9 +341,8 @@ func StageAndCommit(ctx context.Context, repoRoot string, archiveFiles []string,
 		intendedMap[r] = true
 	}
 
-	for _, line := range strings.Split(stagedOut, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && !intendedMap[filepath.ToSlash(line)] {
+	for _, line := range stagedPaths {
+		if !intendedMap[line] {
 			// Unstage everything before returning
 			_, _ = runGit(ctx, repoRoot, "reset", "HEAD")
 			return "", fmt.Errorf("security violation: unexpected file staged (%s); un-staged all", line)
@@ -297,7 +363,9 @@ func StageAndCommit(ctx context.Context, repoRoot string, archiveFiles []string,
 
 	if journal != nil {
 		journal.RecordToolCommit(commitSHA)
-		_ = journal.Save()
+		if err := journal.Save(); err != nil {
+			return commitSHA, fmt.Errorf("persist created commit %s: %w", commitSHA, err)
+		}
 	}
 
 	return commitSHA, nil
@@ -331,7 +399,9 @@ func Push(ctx context.Context, repoRoot string, remote, branch string, commitSHA
 
 	if journal != nil {
 		journal.ClearPendingPush(commitSHA)
-		_ = journal.Save()
+		if err := journal.Save(); err != nil {
+			return fmt.Errorf("persist successful push: %w", err)
+		}
 	}
 
 	return nil
@@ -351,13 +421,12 @@ func RecoverPending(ctx context.Context, repoRoot string, remote, branch string,
 	}
 
 	// 2. Verify commit touched ONLY emails/archive/ files
-	diffOut, err := runGit(ctx, repoRoot, "diff-tree", "--no-commit-id", "--name-only", "-r", sha)
+	diffPaths, err := runGitPaths(ctx, repoRoot, "diff-tree", "--no-commit-id", "--name-only", "-z", "-r", sha)
 	if err != nil {
 		return false, fmt.Errorf("diff-tree for %s: %w", sha, err)
 	}
-	for _, line := range strings.Split(diffOut, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && !strings.HasPrefix(filepath.ToSlash(line), "emails/archive/") {
+	for _, line := range diffPaths {
+		if !strings.HasPrefix(line, "emails/archive/") {
 			return false, fmt.Errorf("pending commit %s touched files outside emails/archive/: %s; refusing recovery push", sha[:8], line)
 		}
 	}
@@ -365,6 +434,22 @@ func RecoverPending(ctx context.Context, repoRoot string, remote, branch string,
 	// 3. Verify commit is an ancestor of HEAD
 	if _, err := runGit(ctx, repoRoot, "merge-base", "--is-ancestor", sha, "HEAD"); err != nil {
 		return false, fmt.Errorf("pending commit %s is not an ancestor of current HEAD", sha[:8])
+	}
+
+	// Recovery can run after the user changes branches or adds personal commits.
+	// Apply the same safety checks as a fresh publication before pushing.
+	remoteRef := fmt.Sprintf("%s/%s", remote, branch)
+	outgoing, err := runGit(ctx, repoRoot, "rev-list", remoteRef+"..HEAD")
+	if err != nil {
+		return false, fmt.Errorf("cannot verify outgoing recovery commits: %w", err)
+	}
+	for _, outgoingSHA := range strings.Fields(outgoing) {
+		if !journal.IsToolCommit(outgoingSHA) {
+			return false, fmt.Errorf("unpushed personal/unrecorded commit detected (%s); refusing recovery push", outgoingSHA)
+		}
+	}
+	if err := Preflight(ctx, repoRoot, remote, branch, nil, journal); err != nil {
+		return false, fmt.Errorf("recovery preflight: %w", err)
 	}
 
 	// 4. Push

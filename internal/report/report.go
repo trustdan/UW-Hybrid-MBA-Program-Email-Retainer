@@ -1,4 +1,4 @@
-﻿// Package report defines standard exit codes and JSON schemas for hmba-mail commands.
+// Package report defines standard exit codes and JSON schemas for hmba-mail commands.
 package report
 
 import "github.com/trustdan/hmba-mail/internal/config"

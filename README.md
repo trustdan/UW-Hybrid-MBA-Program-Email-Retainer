@@ -327,6 +327,8 @@ powershell -ExecutionPolicy Bypass -File scripts/build.ps1 -Version 0.1.0
 
 Equivalent core checks are `go mod verify`, `go vet ./...`, `go test ./...`, and `go build ./cmd/hmba-mail`. [CI](.github/workflows/ci.yml) runs verification, vet, tests, and a build on Windows and Ubuntu, and automatically bundles release archives and SHA256 checksums on version tags (`v*`). Scheduler integration is Windows-specific; the non-Windows implementation reports it as unsupported. Unit tests do not establish that a live Outlook/OneDrive flow or registered Windows task works.
 
+The scheduler lifecycle test is opt-in because it replaces and removes the `HMBAMailSync` task. On a disposable Windows host, set `$env:HMBA_TEST_SCHEDULER_LIFECYCLE = '1'` before running `go test ./internal/scheduler -run TestWindowsSchedulerLifecycle -count=1`. Ordinary test runs exercise launcher generation and PowerShell path handling without registering a task.
+
 | Path | Responsibility |
 | --- | --- |
 | `cmd/hmba-mail` | CLI parsing, diagnostics, reports, and exit codes. |

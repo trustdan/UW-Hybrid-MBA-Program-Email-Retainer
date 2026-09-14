@@ -168,4 +168,3 @@ func TestRenderCustomProvenanceSource(t *testing.T) {
 		t.Errorf("expected custom local_source in frontmatter, got:\n%s", string(data))
 	}
 }
-

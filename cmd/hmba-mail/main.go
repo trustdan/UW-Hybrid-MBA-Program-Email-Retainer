@@ -319,6 +319,10 @@ func handleSchedule(ctx context.Context, args []string, out, stderr io.Writer) i
 		return report.ExitSuccess
 
 	case "status":
+		if len(args) != 1 {
+			fmt.Fprintln(stderr, "use schedule status")
+			return report.ExitInvalidUsage
+		}
 		status, err := scheduler.Status(ctx)
 		if err != nil {
 			fmt.Fprintf(stderr, "schedule status failed: %v\n", err)
@@ -330,6 +334,10 @@ func handleSchedule(ctx context.Context, args []string, out, stderr io.Writer) i
 		return report.ExitSuccess
 
 	case "run":
+		if len(args) != 1 {
+			fmt.Fprintln(stderr, "use schedule run")
+			return report.ExitInvalidUsage
+		}
 		if err := scheduler.RunNow(ctx); err != nil {
 			fmt.Fprintf(stderr, "schedule run failed: %v\n", err)
 			return report.ExitPartialFailure
@@ -341,7 +349,10 @@ func handleSchedule(ctx context.Context, args []string, out, stderr io.Writer) i
 		flags := flag.NewFlagSet("schedule remove", flag.ContinueOnError)
 		flags.SetOutput(stderr)
 		path := flags.String("config", "", "configuration JSON path (optional)")
-		_ = flags.Parse(args[1:])
+		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
+			fmt.Fprintln(stderr, "use schedule remove [--config PATH]")
+			return report.ExitInvalidUsage
+		}
 		if err := scheduler.Remove(ctx, *path); err != nil {
 			fmt.Fprintf(stderr, "schedule remove failed: %v\n", err)
 			return report.ExitPartialFailure

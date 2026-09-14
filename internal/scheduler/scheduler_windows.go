@@ -6,13 +6,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 )
 
 func runPowerShell(ctx context.Context, script string) ([]byte, error) {
+	// Windows PowerShell otherwise encodes redirected output using a legacy
+	// code page, corrupting Unicode paths returned in task status JSON.
+	script = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n" + script
 	cmd := exec.CommandContext(ctx, "powershell.exe",
 		"-NoProfile",
 		"-NonInteractive",
@@ -32,6 +34,10 @@ func runPowerShell(ctx context.Context, script string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
+func powerShellLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
 func isSchedulerUnavailable(err error) bool {
 	if err == nil {
 		return false
@@ -45,7 +51,7 @@ func isSchedulerUnavailable(err error) bool {
 func installTask(ctx context.Context, launcherPath string) (*TaskStatus, error) {
 	psScript := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
-$launcher = %q
+$launcher = %s
 try {
     $service = New-Object -ComObject("Schedule.Service")
     $service.Connect()
@@ -78,8 +84,8 @@ $action = $taskDef.Actions.Create(0) # TASK_ACTION_EXEC
 $action.Path = "wscript.exe"
 $action.Arguments = '//B //Nologo "' + $launcher + '"'
 
-$reg = $root.RegisterTaskDefinition(%q, $taskDef, 6, $null, $null, 3)
-`, launcherPath, TaskName)
+$reg = $root.RegisterTaskDefinition(%s, $taskDef, 6, $null, $null, 3)
+`, powerShellLiteral(launcherPath), powerShellLiteral(TaskName))
 
 	if _, err := runPowerShell(ctx, psScript); err != nil {
 		if isSchedulerUnavailable(err) {
@@ -91,10 +97,30 @@ $reg = $root.RegisterTaskDefinition(%q, $taskDef, 6, $null, $null, 3)
 	return queryStatus(ctx)
 }
 
+// Keep the PowerShell projection aligned with TaskStatus's JSON contract.
+// It is shared with the synthetic status test so no installed task is needed.
+const taskStatusJSONScript = `
+$res = [PSCustomObject]@{
+    installed = $true
+    name = $task.Name
+    enabled = $task.Enabled
+    state = $stateStr
+    last_run_time = $task.LastRunTime.ToString("o")
+    next_run_time = $task.NextRunTime.ToString("o")
+    last_exit_code = $task.LastTaskResult
+    delay = if ($trigger) { $trigger.Delay } else { "" }
+    disallow_start_if_on_batteries = $task.Definition.Settings.DisallowStartIfOnBatteries
+    stop_if_going_on_batteries = $task.Definition.Settings.StopIfGoingOnBatteries
+    action_command = if ($action) { $action.Path } else { "" }
+    action_arguments = if ($action) { $action.Arguments } else { "" }
+}
+$res | ConvertTo-Json -Compress
+`
+
 func queryStatus(ctx context.Context) (*TaskStatus, error) {
 	psScript := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
-$taskName = %q
+$taskName = %s
 try {
     $service = New-Object -ComObject("Schedule.Service")
     $service.Connect()
@@ -127,22 +153,8 @@ if ($task.Definition.Actions.Count -ge 1) {
     $action = $task.Definition.Actions.Item(1)
 }
 
-$res = [PSCustomObject]@{
-    Installed = $true
-    Name = $task.Name
-    Enabled = $task.Enabled
-    State = $stateStr
-    LastRunTime = $task.LastRunTime.ToString("o")
-    NextRunTime = $task.NextRunTime.ToString("o")
-    LastExitCode = $task.LastTaskResult
-    Delay = if ($trigger) { $trigger.Delay } else { "" }
-    DisallowStartIfOnBatteries = $task.Definition.Settings.DisallowStartIfOnBatteries
-    StopIfGoingOnBatteries = $task.Definition.Settings.StopIfGoingOnBatteries
-    ActionCommand = if ($action) { $action.Path } else { "" }
-    ActionArguments = if ($action) { $action.Arguments } else { "" }
-}
-$res | ConvertTo-Json -Compress
-`, TaskName)
+`, powerShellLiteral(TaskName))
+	psScript += taskStatusJSONScript
 
 	out, err := runPowerShell(ctx, psScript)
 	if err != nil {
@@ -169,23 +181,41 @@ func runTask(ctx context.Context) error {
 	return nil
 }
 
-func removeTask(ctx context.Context) error {
-	psScript := fmt.Sprintf(`
-$ErrorActionPreference = 'SilentlyContinue'
-$taskName = %q
+// Shared with synthetic COM tests so removal can be checked without touching
+// the user's installed task.
+const taskRemovalScript = `
+$ErrorActionPreference = 'Stop'
 try {
     $service = New-Object -ComObject("Schedule.Service")
     $service.Connect()
     $root = $service.GetFolder("\")
+} catch {
+    Write-Error "Task Scheduler service unavailable: $_"
+    exit 10
+}
+try {
     $root.DeleteTask($taskName, 0)
 } catch {
-    # ignored if not exists or service unavailable
+    # COM invocation errors may wrap the actual HRESULT. Only a missing task
+    # is an idempotent success; access denied and service errors must surface.
+    $exception = $_.Exception
+    while ($null -ne $exception) {
+        if ($exception.HResult -eq -2147024894) { exit 0 } # 0x80070002
+        $exception = $exception.InnerException
+    }
+    throw
 }
-`, TaskName)
+`
+
+func removeTask(ctx context.Context) error {
+	psScript := "$taskName = " + powerShellLiteral(TaskName) + "\n" + taskRemovalScript
 
 	_, err := runPowerShell(ctx, psScript)
 	if err != nil {
-		return errors.New("failed to remove task")
+		if isSchedulerUnavailable(err) {
+			return fmt.Errorf("%w: %v", ErrSchedulerUnavailable, err)
+		}
+		return fmt.Errorf("remove scheduled task: %w", err)
 	}
 	return nil
 }

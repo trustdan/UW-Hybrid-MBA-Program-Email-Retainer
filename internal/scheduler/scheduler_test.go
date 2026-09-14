@@ -2,12 +2,14 @@ package scheduler
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 func TestLauncherGeneration(t *testing.T) {
@@ -30,7 +32,10 @@ func TestLauncherGeneration(t *testing.T) {
 }
 
 func TestWriteLauncher(t *testing.T) {
-	tmp := t.TempDir()
+	tmp := filepath.Join(t.TempDir(), "Renée 李 [mail] $data")
+	if err := os.Mkdir(tmp, 0700); err != nil {
+		t.Fatal(err)
+	}
 	exePath := filepath.Join(tmp, "fake-exe.exe")
 	cfgPath := filepath.Join(tmp, "fake-config.json")
 
@@ -55,8 +60,16 @@ func TestWriteLauncher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read launcher: %v", err)
 	}
-	if !strings.Contains(string(content), "run-task.vbs") && !strings.Contains(string(content), "WScript.Quit") {
-		t.Errorf("unexpected launcher content: %s", string(content))
+	if len(content) < 2 || len(content)%2 != 0 || binary.LittleEndian.Uint16(content) != 0xfeff {
+		t.Fatal("launcher must be UTF-16LE with a BOM")
+	}
+	units := make([]uint16, (len(content)-2)/2)
+	for i := range units {
+		units[i] = binary.LittleEndian.Uint16(content[2+i*2:])
+	}
+	script := string(utf16.Decode(units))
+	if script != GenerateLauncherScript(exePath, cfgPath) {
+		t.Fatalf("launcher paths did not survive encoding: %s", script)
 	}
 }
 
@@ -83,6 +96,9 @@ func TestWindowsSchedulerLifecycle(t *testing.T) {
 	}
 	if testing.Short() {
 		t.Skip("skipping Windows Task Scheduler lifecycle test in short mode")
+	}
+	if os.Getenv("HMBA_TEST_SCHEDULER_LIFECYCLE") != "1" {
+		t.Skip("set HMBA_TEST_SCHEDULER_LIFECYCLE=1 on a disposable host; this test replaces the HMBAMailSync task")
 	}
 
 	ctx := context.Background()
@@ -135,4 +151,3 @@ func TestWindowsSchedulerLifecycle(t *testing.T) {
 		t.Errorf("expected status to report installed=false after removal")
 	}
 }
-

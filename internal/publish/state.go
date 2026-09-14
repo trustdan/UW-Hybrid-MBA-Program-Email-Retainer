@@ -18,13 +18,13 @@ type StateJournal struct {
 }
 
 type JournalRecord struct {
-	SourceSHA256   string    `json:"source_sha256"`
-	GeneratedSHA256 string   `json:"generated_sha256"`
-	Category       string    `json:"category"`
-	Filename       string    `json:"filename"`
-	ArchiveRel     string    `json:"archive_rel"`
-	SharedRel      string    `json:"shared_rel"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	SourceSHA256    string    `json:"source_sha256"`
+	GeneratedSHA256 string    `json:"generated_sha256"`
+	Category        string    `json:"category"`
+	Filename        string    `json:"filename"`
+	ArchiveRel      string    `json:"archive_rel"`
+	SharedRel       string    `json:"shared_rel"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // LoadJournal loads or initializes the state journal from the state directory.
@@ -49,6 +49,9 @@ func LoadJournal(stateDir string) (*StateJournal, error) {
 	if err := json.Unmarshal(data, &sj.Records); err != nil {
 		return nil, fmt.Errorf("corrupt journal %s: %w", path, err)
 	}
+	if sj.Records == nil {
+		return nil, fmt.Errorf("corrupt journal %s: expected a JSON object, got null", path)
+	}
 	return sj, nil
 }
 
@@ -69,6 +72,9 @@ func LoadJournalReadOnly(stateDir string) (*StateJournal, error) {
 	}
 	if err := json.Unmarshal(data, &sj.Records); err != nil {
 		return nil, fmt.Errorf("corrupt journal %s: %w", path, err)
+	}
+	if sj.Records == nil {
+		return nil, fmt.Errorf("corrupt journal %s: expected a JSON object, got null", path)
 	}
 	return sj, nil
 }

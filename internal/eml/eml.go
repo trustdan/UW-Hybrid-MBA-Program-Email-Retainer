@@ -1,4 +1,4 @@
-﻿// Package eml parses raw EML messages and extracts headers, bodies, and attachment metadata.
+// Package eml parses raw EML messages and extracts headers, bodies, and attachment metadata.
 package eml
 
 import (

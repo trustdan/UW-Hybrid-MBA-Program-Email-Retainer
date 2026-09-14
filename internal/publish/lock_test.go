@@ -61,8 +61,33 @@ func TestAcquireLock_UncleanExitRecovery(t *testing.T) {
 	}
 	rel()
 
-	// File should be removed upon release
-	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
-		t.Errorf("expected lock file to be removed after release")
+	// The persistent file is unlocked; its presence does not indicate activity.
+	if locked, _, err := CheckLock(tempDir); err != nil || locked {
+		t.Fatalf("stale lock remained active: locked=%v, err=%v", locked, err)
+	}
+}
+
+func TestLockReleasePreservesWaitingHandle(t *testing.T) {
+	dir := t.TempDir()
+	release, err := AcquireLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	// A second process can open the file before the first releases its lock.
+	waiter, err := os.OpenFile(filepath.Join(dir, "import.lock"), os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer waiter.Close()
+	release()
+	if err := acquireOSLock(waiter); err != nil {
+		t.Fatal(err)
+	}
+	defer releaseOSLock(waiter)
+	release() // An old release callback must not affect the new holder.
+	if thirdRelease, err := AcquireLock(dir); err == nil {
+		thirdRelease()
+		t.Fatal("third run acquired a separate lock while the waiter was active")
 	}
 }

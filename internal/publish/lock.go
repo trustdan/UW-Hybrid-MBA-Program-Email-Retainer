@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // AcquireLock acquires an OS-backed single-run lock file in the state directory.
@@ -41,11 +42,15 @@ func AcquireLock(stateDir string) (func(), error) {
 	_, _ = f.Seek(0, 0)
 	_, _ = f.WriteString(strconv.Itoa(os.Getpid()))
 
+	var releaseOnce sync.Once
 	release := func() {
-		_ = releaseOSLock(f)
-		_ = f.Close()
-		_ = os.Remove(lockPath)
+		releaseOnce.Do(func() {
+			_ = releaseOSLock(f)
+			_ = f.Close()
+		})
 	}
+	// Keep the file: a waiter may already have opened this inode. Unlinking
+	// it would allow a third process to lock a different file at this path.
 	return release, nil
 }
 

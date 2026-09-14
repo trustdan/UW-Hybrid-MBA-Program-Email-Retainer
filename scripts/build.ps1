@@ -1,7 +1,7 @@
 param([string]$Version = "0.1.0")
 $ErrorActionPreference = 'Stop'
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-Push-Location $repoRoot
+$repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+Push-Location -LiteralPath $repoRoot
 try {
     Write-Host "==> Compiling hmba-mail..."
     New-Item -ItemType Directory -Force "dist" | Out-Null

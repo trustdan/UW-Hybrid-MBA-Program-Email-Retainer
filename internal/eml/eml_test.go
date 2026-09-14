@@ -1,4 +1,4 @@
-﻿package eml
+package eml
 
 import (
 	"strings"

@@ -7,6 +7,28 @@ import (
 	"testing"
 )
 
+func TestLoadJournal_RejectsNull(t *testing.T) {
+	for name, loader := range map[string]func(string) (*StateJournal, error){
+		"live":      LoadJournal,
+		"read-only": LoadJournalReadOnly,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "journal.json")
+			if err := os.WriteFile(path, []byte("null\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := loader(dir); err == nil || !strings.Contains(err.Error(), "corrupt journal") {
+				t.Fatalf("expected corrupt journal error, got %v", err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil || string(data) != "null\n" {
+				t.Fatalf("loader modified invalid journal: data=%q, err=%v", data, err)
+			}
+		})
+	}
+}
+
 func TestLoadJournal_FreshMissing(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "state")
 	sj, err := LoadJournal(dir)

@@ -57,24 +57,12 @@ func AtomicWrite(target string, data []byte) error {
 		return err
 	}
 
-	// Try direct rename first
-	if err := os.Rename(tmpPath, target); err == nil {
-		return nil
+	// os.Rename already replaces existing files on Windows. Moving the
+	// destination aside after a failure can destroy directories or user data.
+	if err := os.Rename(tmpPath, target); err != nil {
+		return fmt.Errorf("replace %s: %w", target, err)
 	}
-
-	// Windows fallback if destination file already exists:
-	bakPath := filepath.Join(dir, fmt.Sprintf(".backup-%d.tmp", time.Now().UnixNano()))
-	if moveErr := os.Rename(target, bakPath); moveErr == nil {
-		if replaceErr := os.Rename(tmpPath, target); replaceErr == nil {
-			_ = os.Remove(bakPath)
-			return nil
-		} else {
-			_ = os.Rename(bakPath, target) // rollback
-			return replaceErr
-		}
-	}
-
-	return fmt.Errorf("replace %s: %w", target, err)
+	return nil
 }
 
 // PreviewMarkdownDestination inspects destination state without modifying any files.
@@ -125,7 +113,6 @@ func WriteMarkdownDestination(destPath string, data []byte, sourceSHA256 string,
 		return WriteResultConflict, conflictReason, nil
 	}
 }
-
 
 // waitForInputDirectory polls up to maxWait for input directory to exist and be readable.
 // This handles OneDrive hydration / startup delay when launched right after logon.
@@ -424,14 +411,7 @@ func Run(ctx context.Context, cfg config.Config, dryRun bool) (*report.RunReport
 		if logger != nil {
 			logger.Logf("scan complete: no EML files found in input directory")
 		}
-		if !dryRun {
-			lastRunBytes, err := json.MarshalIndent(rep, "", "  ")
-			if err == nil {
-				_ = AtomicWrite(filepath.Join(cfg.State, "last-run.json"), lastRunBytes)
-			}
-		}
-		// Empty input is NOT a failure; clean return with 0 counts
-		return rep, nil
+		// Continue through the shared persistence path, even with no messages.
 	}
 
 	var writtenArchivePaths []string
@@ -500,21 +480,24 @@ func Run(ctx context.Context, cfg config.Config, dryRun bool) (*report.RunReport
 			Attachments:  msg.Attachments,
 		}
 
+		archPath := filepath.Join(cfg.Archive, msg.Category, filename)
+		sharedPath := filepath.Join(cfg.Shared, msg.Category, filename)
+		// Check both destinations before changing either, matching dry-run behavior.
+		resArch, conflictArch := PreviewMarkdownDestination(archPath, mdData, msg.SHA256, journal)
+		resShared, conflictShared := PreviewMarkdownDestination(sharedPath, mdData, msg.SHA256, journal)
+		if resArch == WriteResultConflict || resShared == WriteResultConflict {
+			rep.Counts.Conflicts++
+			if resArch == WriteResultConflict {
+				rec.Error = fmt.Sprintf("archive conflict: %s", conflictArch)
+			} else {
+				rec.Error = fmt.Sprintf("shared conflict: %s", conflictShared)
+			}
+			rep.Messages = append(rep.Messages, rec)
+			continue
+		}
+
 		if dryRun {
-			archPath := filepath.Join(cfg.Archive, msg.Category, filename)
-			sharedPath := filepath.Join(cfg.Shared, msg.Category, filename)
-
-			resArch, conflictArch := PreviewMarkdownDestination(archPath, mdData, msg.SHA256, journal)
-			resShared, conflictShared := PreviewMarkdownDestination(sharedPath, mdData, msg.SHA256, journal)
-
-			if resArch == WriteResultConflict || resShared == WriteResultConflict {
-				rep.Counts.Conflicts++
-				if resArch == WriteResultConflict {
-					rec.Error = fmt.Sprintf("archive conflict: %s", conflictArch)
-				} else {
-					rec.Error = fmt.Sprintf("shared conflict: %s", conflictShared)
-				}
-			} else if resArch == WriteResultUnchanged && resShared == WriteResultUnchanged {
+			if resArch == WriteResultUnchanged && resShared == WriteResultUnchanged {
 				rep.Counts.Unchanged++
 			} else {
 				rep.Counts.Written++
@@ -538,8 +521,7 @@ func Run(ctx context.Context, cfg config.Config, dryRun bool) (*report.RunReport
 		}
 
 		// 2. Write Archive copy
-		archPath := filepath.Join(cfg.Archive, msg.Category, filename)
-		resArch, conflictArch, err := WriteMarkdownDestination(archPath, mdData, msg.SHA256, journal)
+		resArch, conflictArch, err = WriteMarkdownDestination(archPath, mdData, msg.SHA256, journal)
 		if err != nil || resArch == WriteResultConflict {
 			rep.Counts.Conflicts++
 			rec.Error = fmt.Sprintf("archive conflict: %s %v", conflictArch, err)
@@ -549,10 +531,10 @@ func Run(ctx context.Context, cfg config.Config, dryRun bool) (*report.RunReport
 			}
 			continue
 		}
+		rec.ArchiveWritten = resArch == WriteResultCreated || resArch == WriteResultUpdated
 
 		// 3. Write Shared copy
-		sharedPath := filepath.Join(cfg.Shared, msg.Category, filename)
-		resShared, conflictShared, err := WriteMarkdownDestination(sharedPath, mdData, msg.SHA256, journal)
+		resShared, conflictShared, err = WriteMarkdownDestination(sharedPath, mdData, msg.SHA256, journal)
 		if err != nil || resShared == WriteResultConflict {
 			rep.Counts.Conflicts++
 			rec.Error = fmt.Sprintf("shared conflict: %s %v", conflictShared, err)
@@ -572,8 +554,7 @@ func Run(ctx context.Context, cfg config.Config, dryRun bool) (*report.RunReport
 			}
 		}
 
-		rec.ArchiveWritten = true
-		rec.SharedWritten = true
+		rec.SharedWritten = resShared == WriteResultCreated || resShared == WriteResultUpdated
 		rep.Messages = append(rep.Messages, rec)
 
 		if logger != nil {
