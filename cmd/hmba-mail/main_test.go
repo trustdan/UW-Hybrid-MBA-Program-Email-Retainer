@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -128,6 +129,13 @@ func TestScheduleCLI(t *testing.T) {
 	errBuf.Reset()
 	if code := run([]string{"schedule", "bogus"}, &out, &errBuf); code != 2 {
 		t.Fatalf("schedule bogus: expected code 2, got %d", code)
+	}
+
+	// Schedule status queries the Windows Task Scheduler, so it reports a
+	// non-zero "only supported on Windows" error everywhere else. The argument
+	// validation above is cross-platform and still runs on every host.
+	if runtime.GOOS != "windows" {
+		t.Skip("skipping schedule status: Windows Task Scheduler is only supported on Windows")
 	}
 
 	// Schedule status
