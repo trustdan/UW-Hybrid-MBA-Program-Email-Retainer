@@ -2,7 +2,7 @@
 
 Convert locally saved Foster Hybrid MBA announcements and Canvas notifications into searchable Markdown. The Go executable (`hmba-mail`) writes matching notes to a local archive and a shared folder, and preserves the original emails.
 
-**Current scope:** local conversion and Windows logon automation. Automatic Git publishing is disabled by configuration validation, even though an internal implementation exists. Keep `git.enabled` set to `false`.
+**Current scope:** local conversion, Windows automation, and optional automatic Git commit and push. Git publishing defaults to disabled; enable it for an archive stored under `emails/archive/` in a parent repository.
 
 ## Contents
 
@@ -136,14 +136,24 @@ Use [config.example.json](config.example.json) as the complete starting template
 | `rules` | Ordered subject rules. Defaults to the two rules in the example. At least one is required. |
 | `max_message_bytes` | Maximum source file size. Default `52428800` (50 MiB); range 1 through 1073741824. |
 | `timeout_seconds` | Run timeout. Default `600`; range 1 through 3600. Applies to `run`, not `backfill`. |
-| `git.enabled` | Must be `false`; automatic Git publishing is unavailable through the CLI. |
-| `git.archive_repo`, `git.parent_repo`, `git.remote`, `git.branch` | Reserved Git settings; unused with publishing disabled. Remote and branch default to `origin` and `main`. |
+| `git.enabled` | Enable scoped automatic commit and push; defaults to `false`. See setup below. |
+| `git.parent_repo` | Optional repository root. Use an absolute path; when empty, discovered from `archive`. |
+| `git.archive_repo` | Legacy field; unused by the publisher. |
+| `git.remote`, `git.branch` | Default to `origin` and `main`; must be nonblank when publishing is enabled. |
 
 Relative paths resolve against the configuration file's directory, not the shell's working directory. Paths do not expand `$HOME`, `%USERPROFILE%`, or `~`; use actual paths. Unknown fields are rejected.
 
 The five directories must not overlap, except that `shared` may be a strict child of `input`. That shared subtree is skipped during scanning. Existing links and junctions are resolved when validating paths.
 
 Rules match case-insensitive subject substrings; the first match wins. Duplicate subjects are rejected, and categories must be either `canvas-digest` or `program-announcement`. Unmatched messages are scanned but produce no notes or original backups.
+
+### Automatic Git publishing
+
+Set `archive` to `<parent-repository>/emails/archive`, and set `git.enabled` to `true`. Optionally set `git.parent_repo` to that repository's absolute path. Git must already have a configured remote, commit identity, and credentials that work without interactive prompts. The example configuration keeps publishing disabled for local-only installations.
+
+Live runs commit newly written archive files and push to the configured remote and branch. The publisher refuses paths outside `emails/archive/`, unrelated staged files, remote divergence, and unpushed commits it did not create. Unstaged unrelated work is preserved. `run --dry-run` does not commit or push.
+
+An interrupted push is recorded in `state/git-journal.json` and retried after checking the pending commit's scope. A preflight failure reports `run_completed_git_blocked`; inspect the report and logs. Local conversion may already have completed. Unchanged files are not staged on later runs, so files written before a blocked commit may require manual staging and publication after resolving the cause. Inspect `git status` and stage only the intended archive files.
 
 ## Output and repeat runs
 
@@ -187,6 +197,39 @@ The task is named `HMBAMailSync`. Installation creates or replaces that task and
 
 **The installed trigger is logon-only.** There is no continuous watcher or recurring polling interval. Mail arriving later waits for another manual or scheduled invocation. `schedule run` starts the background task and returns before conversion completes; inspect `status` and the logs afterward.
 
+For hourly processing while signed in, add a second trigger after installation. This preserves the logon trigger and adds daily 07:00 with hourly repetition for 24 hours, matching the production setup restored on 2026-09-15:
+
+```powershell
+$hmbaTaskService = New-Object -ComObject 'Schedule.Service'
+$hmbaTaskService.Connect()
+$hmbaTaskFolder = $hmbaTaskService.GetFolder('\')
+$hmbaTaskDefinition = $hmbaTaskFolder.GetTask('HMBAMailSync').Definition
+# Avoid duplicating the same recurring trigger when rerunning this setup.
+$hmbaHourly = @($hmbaTaskDefinition.Triggers | Where-Object {
+    $_.Type -eq 2 -and $_.Repetition.Interval -eq 'PT1H'
+})
+if ($hmbaHourly.Count -eq 0) {
+    $hmbaTrigger = $hmbaTaskDefinition.Triggers.Create(2) # Daily
+    $hmbaTrigger.StartBoundary = (Get-Date).Date.AddHours(7).ToString('yyyy-MM-ddTHH:mm:ss')
+    $hmbaTrigger.DaysInterval = 1
+    $hmbaTrigger.Repetition.Interval = 'PT1H'
+    $hmbaTrigger.Repetition.Duration = 'P1D'
+    $hmbaTrigger.Enabled = $true
+    $hmbaTaskDefinition.Settings.StartWhenAvailable = $true
+    $hmbaTaskFolder.RegisterTaskDefinition('HMBAMailSync', $hmbaTaskDefinition, 6, $null, $null, 3) | Out-Null
+}
+```
+
+`schedule install` replaces the task, removing this additional trigger; repeat the setup afterward. `schedule status` currently reads only the first trigger. Inspect all triggers directly:
+
+```powershell
+(Get-ScheduledTask -TaskName HMBAMailSync).Triggers |
+    Select-Object CimClass, StartBoundary, Delay, Repetition
+Get-ScheduledTaskInfo -TaskName HMBAMailSync
+```
+
+If `schedule status` reports `installed: false`, register the task first. Packaging alone does not register it. Confirm a background run completes with exit code 0 and a fresh log; a successful launch request alone does not confirm conversion or Git publication.
+
 To disable automation and remove its launcher:
 
 ```powershell
@@ -218,7 +261,7 @@ Reports go to stdout; command errors go to stderr. Inspect `$LASTEXITCODE` immed
 | --- | --- |
 | `0` | Success or no changes required. Review report errors too; see known gaps below. |
 | `1` | Failure encoding or writing a report. |
-| `2` | Invalid arguments or configuration, including enabling Git publishing. |
+| `2` | Invalid arguments or configuration. |
 | `3` | Input directory unavailable (`check` or `run`). |
 | `4` | Conversion, publication, backfill, or scheduler failure/conflict. |
 | `5` | Reserved for Git publication blocking; not currently emitted by the CLI. |

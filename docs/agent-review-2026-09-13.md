@@ -34,8 +34,9 @@ regressions for confirmed bugs, then ask both reviewers to reassess the changes.
 | Dry-run conflict test did not target the generated filename or assert a conflict | Use the real source hash/date and assert the conflict count | Given an edited generated destination, preview reports one conflict and no write |
 
 Git recovery and scheduler-removal findings received focused follow-up review
-and tests. Git publishing is currently rejected by configuration validation;
-Git findings concern the retained implementation, not an enabled CLI feature.
+and tests. At review time, Git publishing was rejected by configuration validation.
+The 2026-09-15 sync enables it; the retry limitation below still applies and is
+documented in the README's automatic Git publishing recovery guidance.
 
 ## Remaining design work
 
@@ -44,7 +45,7 @@ Git findings concern the retained implementation, not an enabled CLI feature.
    one updated copy and an older journal. The report retains completed write
    flags. Durable per-destination progress would be needed for recovery across
    subsequent renderer changes; a two-file atomicity guarantee is not provided.
-2. **Git retry needs durable intent before enabling the feature.** The integration
+2. **Git retry needs durable intent.** The integration
    tracks only archive files written in the current run. A failed preflight or
    commit followed by unchanged output can therefore omit the retry. Track files
    awaiting commit in persistent state and test failure/restart/retry before

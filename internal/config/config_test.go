@@ -68,7 +68,10 @@ func TestRejectUnsafeConfiguration(t *testing.T) {
 		"version":           func(c *Config) { c.Version = 2 },
 		"timeout":           func(c *Config) { c.TimeoutSeconds = 0 },
 		"limit":             func(c *Config) { c.MaxMessageBytes = -1 },
-		"git":               func(c *Config) { c.Git.Enabled = true },
+		"git_no_remote":     func(c *Config) { c.Git.Enabled = true; c.Git.Remote = "" },
+		"git_no_branch":     func(c *Config) { c.Git.Enabled = true; c.Git.Branch = "" },
+		"git_blank_remote":  func(c *Config) { c.Git.Enabled = true; c.Git.Remote = " \t" },
+		"git_blank_branch":  func(c *Config) { c.Git.Enabled = true; c.Git.Branch = " \t" },
 	}
 	for name, edit := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -76,6 +79,16 @@ func TestRejectUnsafeConfiguration(t *testing.T) {
 				t.Fatalf("%s: accepted invalid config", name)
 			}
 		})
+	}
+}
+
+func TestGitPublishingEnabled(t *testing.T) {
+	c, err := Load(fixture(t, func(c *Config) { c.Git.Enabled = true }))
+	if err != nil {
+		t.Fatalf("valid Git publishing configuration rejected: %v", err)
+	}
+	if !c.Git.Enabled || c.Git.Remote != "origin" || c.Git.Branch != "main" {
+		t.Fatalf("Git configuration changed: %+v", c.Git)
 	}
 }
 

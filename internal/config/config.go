@@ -130,7 +130,12 @@ func Load(path string) (Config, error) {
 		}
 	}
 	if c.Git.Enabled {
-		return c, errors.New("Git publishing is not implemented; keep git.enabled false")
+		if strings.TrimSpace(c.Git.Remote) == "" {
+			return c, errors.New("git.remote is required when git.enabled is true")
+		}
+		if strings.TrimSpace(c.Git.Branch) == "" {
+			return c, errors.New("git.branch is required when git.enabled is true")
+		}
 	}
 	return c, nil
 }

@@ -16,7 +16,7 @@ All five highest-priority follow-ups, key behavior/onboarding gaps, and maintena
 
 ## Behavior and onboarding gaps
 
-- **Git publishing is inaccessible through the CLI.** Retained gate: [config validation](../internal/config/config.go) continues to reject `git.enabled: true` pending dedicated implementation review. Documented in README.
+- **Git publishing enabled (2026-09-15 update).** Ported the parent repository's configuration fix: `git.enabled: true` is accepted with nonblank remote and branch. Existing scoped publication remains restricted to `emails/archive/`. See [setup and recovery](../README.md#automatic-git-publishing) and [hourly scheduling](../README.md#windows-automation). The installer still creates only the logon trigger; the production hourly trigger is an additional machine configuration.
 - **School OneDrive is not the installer's first choice.** [package.ps1](../scripts/package.ps1) now prioritizes `OneDriveCommercial` over `OneDriveConsumer`, checks `OneDrive`, and accepts an optional `-OneDrivePath` parameter.
 - **Original references use a legacy location.** [Render](../internal/render/render.go) now defaults to portable provenance (`originals/<hash>.eml`) instead of hardcoding `.local-imports/originals/`, and supports custom source references via `RenderWithSource`. Verified in `TestRealEMLConversionFidelity` and `TestRenderCustomProvenanceSource`.
 - **Status can be stale or misleading.** Empty-input runs now persist `last-run.json`. Final issue status is assigned prior to report serialization so saved reports match returned reports. [handleStatus](../cmd/hmba-mail/main.go) detects and reports `corrupt_last_run` and `unreadable_last_run`. Verified in `TestRunEmptyInputSavesLastRun` and `TestStatusCorruptLastRunReported`.
